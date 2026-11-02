@@ -14,8 +14,7 @@ import org.junit.jupiter.api.Test;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
+import javax.net.ssl.TrustManagerFactory;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -81,12 +80,15 @@ class ClientTest {
         store.setKeyEntry("server", serverKey.privateKey, new char[0], new Certificate[]{serverPem.certificate});
         KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         kmf.init(store, new char[0]);
+        // The stub trusts exactly the client's own self-signed certificate, so the mutual-TLS
+        // proof is a handshake with that certificate and no other.
+        KeyStore clients = KeyStore.getInstance("PKCS12");
+        clients.load(null, null);
+        clients.setCertificateEntry("client", clientPem.certificate);
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init(clients);
         SSLContext context = SSLContext.getInstance("TLS");
-        context.init(kmf.getKeyManagers(), new TrustManager[]{new X509TrustManager() {
-            public void checkClientTrusted(X509Certificate[] chain, String auth) {}
-            public void checkServerTrusted(X509Certificate[] chain, String auth) {}
-            public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-        }}, null);
+        context.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
         server = HttpsServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.setHttpsConfigurator(new HttpsConfigurator(context) {
             public void configure(HttpsParameters params) {

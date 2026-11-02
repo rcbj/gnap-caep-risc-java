@@ -144,6 +144,53 @@ class TrustChainTest {
     }
 
     @Test
+    void theEntrypointRefreshVerifiesAReissuedLeafAgainstTheFileItHas() throws Exception {
+        Path demo = demoDir("verified", port(reissued));
+        Files.createDirectories(demo.resolve("generated"));
+        Files.writeString(demo.resolve(DEFAULT_TLS_CA), published);
+        assertEquals("verified", TrustChain.refresh(demo.resolve("gnap.json")));
+        assertEquals(certificates(published), certificates(Files.readString(demo.resolve(DEFAULT_TLS_CA))));
+    }
+
+    @Test
+    void theEntrypointRefreshTakesANewChainOnFirstUseOnlyWhenTheFileCannotVerifyIt() throws Exception {
+        Path demo = demoDir("first-use");
+        assertEquals("first use", TrustChain.refresh(demo.resolve("gnap.json")));
+        // A file from another CA (a development iya-sts that restarted) cannot verify the chain.
+        X509Gen.KeyPairPem other = X509Gen.createSelfSigned("old sts Root CA");
+        Files.writeString(demo.resolve(DEFAULT_TLS_CA), other.certificatePem);
+        assertEquals("first use", TrustChain.refresh(demo.resolve("gnap.json")));
+        assertEquals(certificates(published), certificates(Files.readString(demo.resolve(DEFAULT_TLS_CA))));
+    }
+
+    @Test
+    void theEntrypointRefreshRefusesAForgedLeafEvenOnFirstUseAndKeepsTheFile() throws Exception {
+        Path demo = demoDir("forged", port(impostor));
+        Files.createDirectories(demo.resolve("generated"));
+        X509Gen.KeyPairPem other = X509Gen.createSelfSigned("old sts Root CA");
+        Files.writeString(demo.resolve(DEFAULT_TLS_CA), other.certificatePem);
+        assertThrows(Exception.class, () -> TrustChain.refresh(demo.resolve("gnap.json")));
+        assertEquals(other.certificatePem, Files.readString(demo.resolve(DEFAULT_TLS_CA)));
+        TrustChain.main(new String[]{"--config", demo.resolve("gnap.json").toString()});
+        assertEquals(other.certificatePem, Files.readString(demo.resolve(DEFAULT_TLS_CA)));
+    }
+
+    @Test
+    void theEntrypointRefreshRefusesTheRightChainUnderTheWrongName() throws Exception {
+        // The leaf names IP 127.0.0.1 only.
+        Path demo = demoDir("wrong-name", "https://localhost:" + provider.getAddress().getPort());
+        assertThrows(Exception.class, () -> TrustChain.refresh(demo.resolve("gnap.json")));
+        assertTrue(!Files.exists(demo.resolve(DEFAULT_TLS_CA)));
+    }
+
+    @Test
+    void theEntrypointCountsCertificatesWithoutARegex() {
+        assertEquals(4, TrustChain.count(published));
+        assertEquals(0, TrustChain.count("-----BEGIN CERTIFICATE\n".repeat(10_000)));
+        assertEquals(10_000, TrustChain.count("-----BEGIN CERTIFICATE-----".repeat(10_000)));
+    }
+
+    @Test
     void theLibraryTrustsTheProviderThroughTheSavedFile() throws Exception {
         Path demo = demoDir("library");
         String url = origin + "/gnap";
@@ -201,10 +248,14 @@ class TrustChainTest {
     }
 
     static Path demoDir(String name) throws Exception {
+        return demoDir(name, origin);
+    }
+
+    static Path demoDir(String name, String at) throws Exception {
         Path demo = work.resolve(name).resolve("demo");
         Files.createDirectories(demo);
         Map<String, Object> raw = Json.map(Json.parse(Files.readString(SHIPPED_CONFIG)));
-        raw.put("grantEndpoint", origin + "/gnap");
+        raw.put("grantEndpoint", at + "/gnap");
         Files.writeString(demo.resolve("gnap.json"), Json.dumps(raw));
         return demo;
     }
