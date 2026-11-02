@@ -3,6 +3,7 @@
 
 package com.iyasec.gnap.demo;
 
+import com.iyasec.gnap.Caught;
 import java.net.URI;
 import java.util.Set;
 
@@ -18,6 +19,7 @@ public final class Redirects {
             int port = Integer.parseInt(value.trim());
             return port >= 1 && port <= 65535 ? port : null;
         } catch (NumberFormatException err) {
+            Caught.warn(err);
             return null;
         }
     }
@@ -32,6 +34,7 @@ public final class Redirects {
             String query = uri.getRawQuery() == null ? "" : "?" + uri.getRawQuery();
             return uri.getScheme() + "://" + shown + ":" + port + path + query;
         } catch (Exception err) {
+            Caught.error(err);
             return url;
         }
     }

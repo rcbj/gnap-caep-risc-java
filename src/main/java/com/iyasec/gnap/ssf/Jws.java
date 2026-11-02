@@ -3,6 +3,7 @@
 
 package com.iyasec.gnap.ssf;
 
+import com.iyasec.gnap.Caught;
 import com.iyasec.gnap.GnapError;
 import com.iyasec.gnap.Json;
 import com.iyasec.gnap.Keys;
@@ -38,6 +39,7 @@ public final class Jws {
         } catch (GnapError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("signature", "the token's header or payload is not JSON", err);
         }
         if (header == null || payload == null) throw new GnapError("signature", "the token's header or payload is not a JSON object");

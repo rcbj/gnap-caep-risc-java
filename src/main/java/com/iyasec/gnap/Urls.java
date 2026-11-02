@@ -41,6 +41,7 @@ public final class Urls {
             String lower = host.toLowerCase();
             return LOOPBACK.contains(lower) || LOOPBACK.contains(shown(lower));
         } catch (Exception err) {
+            Caught.warn(err);
             return false;
         }
     }

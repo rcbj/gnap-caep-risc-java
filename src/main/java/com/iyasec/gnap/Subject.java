@@ -141,6 +141,7 @@ public final class Subject {
         try {
             return decode(user);
         } catch (Exception err) {
+            Caught.error(err);
             return user;
         }
     }

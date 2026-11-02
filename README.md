@@ -50,6 +50,12 @@ ADMIN_API_CLIENT_SECRET=… python3 scripts/configure_iya_sts.py --config demo/g
 
 `--dry-run` prints the admin API calls and sends nothing. When the `gnap-demo` container is running, its `PORT` wins over the shell `PORT`.
 
+## Errors
+
+A caught exception is written to `java.lang.System.Logger` with its stack. The JDK sends that logger to `java.util.logging` unless the application installs a `System.LoggerFinder`. Where this library already threw `GnapError`, it still throws `GnapError`, and the caught exception is the cause.
+
+A catch that recovers does not throw. It is still logged. A poll is retried, the next signing key is tried, an HTTP error body is read, sign-out still finishes after a revoke fails, and a Shared Signals handler that throws does not stop acknowledgement of that event. Passing a `GnapError` through is not logged again: the foreign exception was logged where it was caught.
+
 ## License
 
 MIT. Copyright (c) 2026 Iya CyberSecurity Solutions, LLC.

@@ -53,6 +53,7 @@ public final class Discovery {
         try {
             parsed = Json.parse(answer.body);
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("discovery", grantEndpoint + " did not answer JSON grant-server metadata (" + answer.status + ")", err);
         }
         if (answer.status != 200) throw new GnapError("discovery", grantEndpoint + " answered " + answer.status + " for discovery");
@@ -69,6 +70,7 @@ public final class Discovery {
             try {
                 doc = Json.map(Json.parse(answer.body));
             } catch (Exception ignored) {
+                Caught.error(ignored);
                 doc = null;
             }
             if (answer.status != 200 || doc == null || !(doc.get("jwks_uri") instanceof String)) {

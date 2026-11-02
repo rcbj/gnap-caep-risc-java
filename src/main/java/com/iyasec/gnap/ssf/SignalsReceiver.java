@@ -3,6 +3,7 @@
 
 package com.iyasec.gnap.ssf;
 
+import com.iyasec.gnap.Caught;
 import com.iyasec.gnap.Discovery;
 import com.iyasec.gnap.GnapError;
 import com.iyasec.gnap.Http;
@@ -112,6 +113,7 @@ public final class SignalsReceiver {
             future.complete(result);
             return result;
         } catch (RuntimeException err) {
+            Caught.error(err);
             future.completeExceptionally(err);
             throw err;
         } finally {
@@ -125,11 +127,13 @@ public final class SignalsReceiver {
         try {
             return future.get();
         } catch (ExecutionException err) {
+            Caught.error(err);
             Throwable cause = err.getCause();
             if (cause instanceof RuntimeException runtime) throw runtime;
             if (cause instanceof Error error) throw error;
             throw new IllegalStateException(cause);
         } catch (InterruptedException err) {
+            Caught.error(err);
             Thread.currentThread().interrupt();
             throw new GnapError("ssf", "the poll was interrupted");
         }
@@ -151,6 +155,7 @@ public final class SignalsReceiver {
         try {
             if (pollOnce()) delay = 0;
         } catch (Exception err) {
+            Caught.warn(err);
             delay = Math.min(pollIntervalMs * 4, 60_000);
         }
         if (!running) return;
@@ -188,6 +193,7 @@ public final class SignalsReceiver {
                 handle(entry.getKey(), String.valueOf(entry.getValue()));
                 ack.add(entry.getKey());
             } catch (Exception err) {
+                Caught.warn(err);
                 String code = err instanceof GnapError gnap && "signature".equals(gnap.code) ? "invalid_key" : "invalid_request";
                 Map<String, Object> problem = new LinkedHashMap<>();
                 problem.put("err", code);
@@ -237,6 +243,7 @@ public final class SignalsReceiver {
                 try {
                     onEnd.accept(sessions, event);
                 } catch (Exception err) {
+                    Caught.error(err);
                     event.ended = false;
                 }
                 if (event.ended) for (String localId : sessions) index.remove(localId);
@@ -245,7 +252,9 @@ public final class SignalsReceiver {
             if (handlers.get(entry.getKey()) != null) both.addAll(handlers.get(entry.getKey()));
             if (handlers.get("*") != null) both.addAll(handlers.get("*"));
             for (Consumer<Event> handler : both) {
-                try { handler.accept(event); } catch (Exception ignored) { }
+                try { handler.accept(event); } catch (Exception ignored) {
+                    Caught.error(ignored);
+                }
             }
         }
     }
@@ -338,7 +347,10 @@ public final class SignalsReceiver {
         Http.Answer answer = Http.send(url, method, extra, text, tls, "ssf");
         Object parsed = null;
         if (answer.body != null && !answer.body.isEmpty()) {
-            try { parsed = Json.parse(answer.body); } catch (Exception err) { parsed = answer.body; }
+            try { parsed = Json.parse(answer.body); } catch (Exception err) {
+                Caught.error(err);
+                parsed = answer.body;
+            }
         }
         return new Reply(answer.status, parsed);
     }

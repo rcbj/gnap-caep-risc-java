@@ -68,6 +68,7 @@ public final class X509Gen {
                     builder.build(new JcaContentSignerBuilder("SHA256withECDSA").build(pair.getPrivate())));
             return new KeyPairPem(pem("PRIVATE KEY", pair.getPrivate().getEncoded()), pem("CERTIFICATE", certificate.getEncoded()), certificate);
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("config", "the certificate could not be read: " + err.getMessage(), err);
         }
     }

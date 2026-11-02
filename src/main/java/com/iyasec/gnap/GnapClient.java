@@ -212,6 +212,7 @@ public final class GnapClient {
             parts = URI.create(url);
             if (parts.getScheme() == null || parts.getHost() == null) throw new IllegalArgumentException(url);
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("protocol", "interact.redirect is not a URL: " + url, err);
         }
         if (!"https".equals(parts.getScheme()) && !("http".equals(parts.getScheme()) && (config.allowInsecure || Urls.isLoopback(url)))) {
@@ -268,6 +269,7 @@ public final class GnapClient {
             try {
                 Thread.sleep(Math.min(due, config.maxWaitSec * 1000));
             } catch (InterruptedException err) {
+                Caught.error(err);
                 Thread.currentThread().interrupt();
                 throw new GnapError("protocol", "interrupted while waiting to continue", err);
             }
@@ -318,6 +320,7 @@ public final class GnapClient {
                 try {
                     Thread.sleep((long) (wait * 1000));
                 } catch (InterruptedException interrupted) {
+                    Caught.error(interrupted);
                     Thread.currentThread().interrupt();
                     throw err;
                 }
@@ -353,6 +356,7 @@ public final class GnapClient {
         try {
             parsed = Json.parse(answer.body);
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("protocol", "the authorization server answered " + answer.status + " with a body that is not JSON", err);
         }
         if (answer.status >= 200 && answer.status < 300) return parsed;
@@ -457,6 +461,7 @@ public final class GnapClient {
                 throw new IllegalArgumentException(uri);
             }
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("validation", what + " is not a URL: " + uri, err);
         }
         if (!"https".equals(parts.getScheme()) && !config.allowInsecure) {
@@ -475,6 +480,7 @@ public final class GnapClient {
         try {
             parsed = Json.parse(answer.body);
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("discovery", "the issuer JWKS is not JSON", err);
         }
         Map<String, Object> doc = Json.map(parsed);
@@ -505,6 +511,7 @@ public final class GnapClient {
             for (String part : parts) if (!part.isEmpty()) last = part;
             return last.isEmpty() ? null : java.net.URLDecoder.decode(last, StandardCharsets.UTF_8);
         } catch (Exception err) {
+            Caught.warn(err);
             return null;
         }
     }

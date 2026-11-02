@@ -116,6 +116,7 @@ public final class Keys {
             } catch (GnapError err) {
                 throw err;
             } catch (Exception err) {
+                Caught.error(err);
                 throw new GnapError("config", "this library does not sign with " + alg, err);
             }
         }
@@ -158,6 +159,7 @@ public final class Keys {
             verifier.update(data);
             return verifier.verify(signature);
         } catch (Exception err) {
+            Caught.warn(err);
             return false;
         }
     }
@@ -193,6 +195,7 @@ public final class Keys {
         } catch (GnapError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("signature", "the key " + (jwk.get("kid") == null ? "" : jwk.get("kid")) + " cannot be read: " + err.getMessage(), err);
         }
         throw new GnapError("signature", "the key " + (jwk.get("kid") == null ? "" : jwk.get("kid")) + " cannot be read: unsupported " + jwk.get("kty"));
@@ -208,6 +211,7 @@ public final class Keys {
         } catch (GnapError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("config", "the private key could not be read: " + err.getMessage(), err);
         }
         Map<String, Object> jwk = publicJwk(publicKey);
@@ -216,6 +220,7 @@ public final class Keys {
             try {
                 certificate = (X509Certificate) CertificateFactory.getInstance("X.509").generateCertificate(new java.io.ByteArrayInputStream(certificatePem.getBytes(StandardCharsets.UTF_8)));
             } catch (Exception err) {
+                Caught.error(err);
                 throw new GnapError("config", "the certificate could not be read: " + err.getMessage(), err);
             }
             if (!sameKey(privateKey, publicKey, certificate.getPublicKey())) {
@@ -232,6 +237,7 @@ public final class Keys {
                 String thumb = Json.b64url(Json.sha256(certificate.getEncoded()));
                 return new ClientKey("mtls", privateKey, publicKey, thumb, Json.text(jwk.get("alg")), Json.text(jwk.get("kid")), jwk, leaf, chain);
             } catch (Exception err) {
+                Caught.error(err);
                 throw new GnapError("config", "the certificate could not be read: " + err.getMessage(), err);
             }
         }
@@ -248,6 +254,7 @@ public final class Keys {
             }
             return out.toString();
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("config", "the certificate could not be read: " + err.getMessage(), err);
         }
     }
@@ -295,6 +302,7 @@ public final class Keys {
         } catch (GnapError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("config", "a key of this type is not a GNAP client key this library loads", err);
         }
         throw new GnapError("config", "a key of this type is not a GNAP client key this library loads");
@@ -312,6 +320,7 @@ public final class Keys {
         } catch (GnapError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("config", "a " + jwk.get("kty") + " key is not a GNAP client key this library loads", err);
         }
     }
@@ -385,6 +394,7 @@ public final class Keys {
             signature.update(nonce);
             return signature.verify(signed);
         } catch (Exception err) {
+            Caught.warn(err);
             return false;
         }
     }

@@ -3,6 +3,7 @@
 
 package com.iyasec.gnap.demo;
 
+import com.iyasec.gnap.Caught;
 import com.iyasec.gnap.GnapClient;
 import com.iyasec.gnap.GnapError;
 import com.iyasec.gnap.Json;
@@ -63,6 +64,7 @@ public final class Demo {
             try {
                 handle(exchange, port, published, explicit, Path.of(configPath));
             } catch (Exception err) {
+                Caught.error(err);
                 byte[] body = page("Error", "<h1>Something went wrong</h1><p>" + esc(err.getMessage()) + "</p>").getBytes(StandardCharsets.UTF_8);
                 write(exchange, 500, body, "text/html; charset=utf-8", null);
             }
@@ -134,6 +136,7 @@ public final class Demo {
             exchange.getResponseHeaders().add("Cache-Control", "no-store");
             write(exchange, 302, new byte[0], "text/plain", cookie);
         } catch (Exception err) {
+            Caught.error(err);
             write(exchange, 400, page("Sign-in failed", "<h1>Sign-in failed</h1><p>" + esc(err.getMessage()) + "</p><p><a href=\"/\">Start again</a></p>").getBytes(StandardCharsets.UTF_8), "text/html; charset=utf-8", null);
         }
     }
@@ -150,6 +153,7 @@ public final class Demo {
             place(exchange, done.grant, clear);
             watch(done.grant, config);
         } catch (Exception err) {
+            Caught.error(err);
             write(exchange, 400, page("Sign-in failed", "<h1>Sign-in failed</h1><p>" + esc(err.getMessage()) + "</p>").getBytes(StandardCharsets.UTF_8), "text/html; charset=utf-8", clear);
         }
     }
@@ -159,8 +163,12 @@ public final class Demo {
         if (opened != null) {
             Session session = SESSIONS.remove(String.valueOf(opened.get("id")));
             if (session != null && session.grant != null) {
-                try { if (receiver != null && session.grant.grantId != null) receiver.untrack(session.grant.grantId); } catch (Exception ignored) {}
-                try { if (gnap != null) gnap.revoke(session.grant); } catch (Exception ignored) {}
+                try { if (receiver != null && session.grant.grantId != null) receiver.untrack(session.grant.grantId); } catch (Exception ignored) {
+                    Caught.error(ignored);
+                }
+                try { if (gnap != null) gnap.revoke(session.grant); } catch (Exception ignored) {
+                    Caught.error(ignored);
+                }
             }
         }
         exchange.getResponseHeaders().add("Location", "/");
@@ -174,6 +182,7 @@ public final class Demo {
             if (done.grant.subject != null) watch(done.grant, config);
             write(exchange, 204, new byte[0], "text/plain", null);
         } catch (Exception err) {
+            Caught.error(err);
             write(exchange, 400, Json.dumps(Json.obj("error", err.getMessage())).getBytes(StandardCharsets.UTF_8), "application/json", null);
         }
     }
@@ -191,7 +200,10 @@ public final class Demo {
         latest = grant;
         if (receiver != null) return;
         Map<String, Object> raw;
-        try { raw = Json.map(Json.parse(Files.readString(config))); } catch (Exception err) { return; }
+        try { raw = Json.map(Json.parse(Files.readString(config))); } catch (Exception err) {
+            Caught.warn(err);
+            return;
+        }
         if (raw == null || Boolean.FALSE.equals(raw.get("signals"))) return;
         Map<String, Object> ssf = Json.map(raw.get("ssf"));
         if (ssf == null || !(ssf.get("transmitter") instanceof String transmitter)) return;
@@ -204,6 +216,7 @@ public final class Demo {
             receiver.start();
             if (grant.subject != null) receiver.track(SessionIndex.fromPerson(grant.grantId == null ? grant.subject.sub : grant.grantId, grant.subject, grant.expiresAt));
         } catch (Exception err) {
+            Caught.error(err);
             System.out.println("ssf: not started: " + err.getMessage());
             receiver = null;
         }
@@ -215,6 +228,7 @@ public final class Demo {
                 gnap = GnapClient.create(GnapClient.resolve(readRaw(config, port, publicUrl, given), config.getParent()));
                 gnapError = null;
             } catch (Exception err) {
+                Caught.error(err);
                 gnapError = err instanceof GnapError g ? g.code + ": " + g.getMessage() : err.getMessage();
                 throw err;
             }
@@ -223,7 +237,10 @@ public final class Demo {
     }
 
     private static GnapClient tryClient(Path config, int port, String publicUrl, boolean given) {
-        try { return client(config, port, publicUrl, given); } catch (Exception err) { return null; }
+        try { return client(config, port, publicUrl, given); } catch (Exception err) {
+            Caught.warn(err);
+            return null;
+        }
     }
 
     private static Map<String, Object> readRaw(Path config, int port, String publicUrl, boolean given) throws IOException {
@@ -312,6 +329,7 @@ public final class Demo {
             if (!MessageDigest.isEqual(mac(raw).getBytes(StandardCharsets.UTF_8), got.getBytes(StandardCharsets.UTF_8))) return null;
             return Json.parse(new String(Base64.getUrlDecoder().decode(pad(raw)), StandardCharsets.UTF_8));
         } catch (Exception err) {
+            Caught.warn(err);
             return null;
         }
     }

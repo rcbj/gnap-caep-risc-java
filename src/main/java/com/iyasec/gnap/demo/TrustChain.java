@@ -3,6 +3,7 @@
 
 package com.iyasec.gnap.demo;
 
+import com.iyasec.gnap.Caught;
 import com.iyasec.gnap.Json;
 
 import javax.net.ssl.SSLContext;
@@ -54,6 +55,7 @@ public final class TrustChain {
             while (matcher.find()) count++;
             System.out.println("Saved " + origin + "'s listener CA trust chain (" + count + " certificate(s)) to " + path);
         } catch (Exception err) {
+            Caught.error(err);
             System.err.println("tls ca: not updated: " + err.getMessage());
         }
     }
@@ -70,6 +72,7 @@ public final class TrustChain {
         try {
             return published(origin);
         } catch (Exception err) {
+            Caught.error(err);
             return handshake(origin);
         }
     }

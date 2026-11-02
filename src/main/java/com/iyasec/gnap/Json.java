@@ -25,6 +25,7 @@ public final class Json {
             JsonReader reader = new JsonReader();
             return new JSONParser(JSONParser.MODE_PERMISSIVE).parse(text, reader.DEFAULT_ORDERED);
         } catch (ParseException err) {
+            Caught.error(err);
             throw new IllegalArgumentException(err.getMessage(), err);
         }
     }
@@ -52,6 +53,7 @@ public final class Json {
         try {
             return MessageDigest.getInstance("SHA-256").digest(data);
         } catch (Exception err) {
+            Caught.error(err);
             throw new IllegalStateException(err);
         }
     }

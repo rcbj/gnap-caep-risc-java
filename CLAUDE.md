@@ -10,6 +10,10 @@ GnapClient.Finished done = gnap.finishRedirect(query, List.of(started.pending.id
 
 `GnapClient.resolve` and `Config.readFile` load the same JSON keys as the Node library. Methods are camelCase.
 
+## Errors
+
+`Caught.error` records a caught exception through `java.lang.System.Logger`, including the stack, and the method then throws the `GnapError` it already threw. The caught exception is the cause. `Caught.warn` is the same record when the method recovers and does not throw: a later signing key, a poll retry, a false verification, sign-out cleanup, or a handler that must still acknowledge the Security Event Token. A `catch (GnapError)` that only throws that error again is not logged a second time.
+
 ## Tests
 
 ```bash

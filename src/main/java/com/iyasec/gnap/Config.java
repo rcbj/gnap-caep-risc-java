@@ -53,6 +53,7 @@ public final class Config {
         } catch (GnapError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("config", "could not read " + path + ": " + err.getMessage(), err);
         }
     }
@@ -99,6 +100,7 @@ public final class Config {
             try {
                 finishLoopback = Urls.isLoopback(finishRaw);
             } catch (Exception ignored) {
+                Caught.error(ignored);
                 finishLoopback = false;
             }
         }
@@ -199,6 +201,7 @@ public final class Config {
         try {
             href = Urls.href(value);
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("config", name + " is not a URL: " + value, err);
         }
         if (href.startsWith("https:")) return href;
@@ -223,6 +226,7 @@ public final class Config {
         try {
             return Files.readString(full);
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("config", "could not read " + what + " at " + full + ": " + err.getMessage(), err);
         }
     }
@@ -239,6 +243,7 @@ public final class Config {
         try {
             return Files.readString(full);
         } catch (Exception err) {
+            Caught.warn(err);
             return null;
         }
     }

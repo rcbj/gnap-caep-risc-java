@@ -51,6 +51,7 @@ public final class Http {
         try {
             uri = URI.create(url);
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError(code, url + " is not an http(s) URL", err);
         }
         if (!"https".equals(uri.getScheme()) && !"http".equals(uri.getScheme())) {
@@ -94,8 +95,10 @@ public final class Http {
         } catch (GnapError err) {
             throw err;
         } catch (java.net.SocketTimeoutException err) {
+            Caught.error(err);
             throw new GnapError(code, url + " did not answer within 15 s", err);
         } catch (Exception err) {
+            Caught.error(err);
             String message = err.getMessage() == null ? err.getClass().getSimpleName() : err.getMessage();
             if (message.toLowerCase().contains("timed out")) throw new GnapError(code, url + " did not answer within 15 s", err);
             throw new GnapError(code, url + ": " + message, err);
@@ -169,6 +172,7 @@ public final class Http {
                 }
             }
         } catch (Exception err) {
+            Caught.warn(err);
             return false;
         }
         return false;
@@ -183,6 +187,7 @@ public final class Http {
                 if (certificate instanceof X509Certificate x509) out.add(x509);
             }
         } catch (Exception err) {
+            Caught.error(err);
             throw new GnapError("config", "the certificate could not be read: " + err.getMessage(), err);
         }
         return out;
