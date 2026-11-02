@@ -8,6 +8,7 @@ import com.iyasec.gnap.GnapClient;
 import com.iyasec.gnap.GnapError;
 import com.iyasec.gnap.Json;
 import com.iyasec.gnap.Subject;
+import com.iyasec.gnap.ssf.Events;
 import com.iyasec.gnap.ssf.SessionIndex;
 import com.iyasec.gnap.ssf.SignalsReceiver;
 import com.sun.net.httpserver.HttpExchange;
@@ -30,10 +31,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * A small GNAP sign-in demo. PORT is the bind port. Loopback finish URLs follow it.
  * PUBLIC_URL or --public-url replaces the origin and keeps the path.
+ * GET /live-status is the sign-in and the Shared Signals events. It has no tokens.
  */
 public final class Demo {
     private static final Path HERE = Path.of("demo");
@@ -43,6 +46,8 @@ public final class Demo {
     private static SignalsReceiver receiver;
     private static GnapClient.Grant latest;
     private static final Map<String, Session> SESSIONS = new ConcurrentHashMap<>();
+    private static final List<Map<String, String>> LIVE_EVENTS = new CopyOnWriteArrayList<>();
+    private static volatile String receiverState = "";
 
     private Demo() {}
 
@@ -78,6 +83,10 @@ public final class Demo {
         String method = exchange.getRequestMethod();
         if ("/healthz".equals(path) && "GET".equals(method)) {
             write(exchange, 200, "ok".getBytes(StandardCharsets.UTF_8), "text/plain", null);
+            return;
+        }
+        if ("/live-status".equals(path) && "GET".equals(method)) {
+            liveStatus(exchange);
             return;
         }
         if ("/styles.css".equals(path)) {
@@ -122,6 +131,41 @@ public final class Demo {
         String problem = client == null ? "<p>The GNAP client is not configured yet: " + esc(gnapError == null ? "the key could not be read" : gnapError) + ". Generate the key at the privateKey path, then run scripts/configure_iya_sts.py.</p>" : "";
         String link = client == null ? "" : "<p><a class=\"button\" href=\"/login\">Sign in with GNAP</a></p>";
         write(exchange, 200, page("GNAP demo", "<h1>GNAP CAEP RISC demo</h1>" + problem + link).getBytes(StandardCharsets.UTF_8), "text/html; charset=utf-8", null);
+    }
+
+    private static void liveStatus(HttpExchange exchange) throws Exception {
+        Session session = session(exchange);
+        boolean signedIn = session != null && session.person != null;
+        String subject = null;
+        if (signedIn) {
+            subject = firstNonBlank(session.person.preferredUsername, session.person.email, session.person.name, session.person.sub);
+            if (subject.isEmpty()) subject = null;
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("signedIn", signedIn);
+        body.put("subject", subject);
+        body.put("receiver", receiverState);
+        body.put("events", List.copyOf(LIVE_EVENTS));
+        write(exchange, 200, Json.dumps(body).getBytes(StandardCharsets.UTF_8), "application/json", null);
+    }
+
+    private static void rememberEvent(SignalsReceiver.Event event) {
+        Map<String, String> row = new LinkedHashMap<>();
+        row.put("type", event.type == null ? "" : event.type);
+        row.put("jti", event.jti == null ? "" : event.jti);
+        LIVE_EVENTS.add(row);
+        if (!Events.SESSION_REVOKED.equals(event.type) || SESSIONS.isEmpty()) return;
+        // onEnd removes SESSIONS by the tracked local id. This demo tracks the
+        // grant id, or the subject, and the browser cookie is a different id,
+        // so session-revoked can arrive while that one session is still signed
+        // in. End it.
+        System.out.println("ssf: session-revoked left the cookie session signed in; the receiver tracks the grant id, not that cookie, so ending this demo's one session");
+        SESSIONS.clear();
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) if (value != null && !value.isBlank()) return value;
+        return "";
     }
 
     private static void login(HttpExchange exchange, Path config, int port, String publicUrl, boolean given) throws Exception {
@@ -204,20 +248,30 @@ public final class Demo {
             Caught.warn(err);
             return;
         }
-        if (raw == null || Boolean.FALSE.equals(raw.get("signals"))) return;
+        if (raw == null || Boolean.FALSE.equals(raw.get("signals"))) {
+            receiverState = "not configured (signals are off)";
+            return;
+        }
         Map<String, Object> ssf = Json.map(raw.get("ssf"));
-        if (ssf == null || !(ssf.get("transmitter") instanceof String transmitter)) return;
+        if (ssf == null || !(ssf.get("transmitter") instanceof String transmitter)) {
+            receiverState = "not configured (no ssf block in the configuration file)";
+            return;
+        }
         long interval = ssf.get("pollIntervalMs") instanceof Number number ? number.longValue() : 5000L;
         receiver = new SignalsReceiver(transmitter, (ids, event) -> { for (String id : ids) SESSIONS.remove(id); }, gnap.tls(), request -> {
             if (latest == null) return Map.of();
             return gnap.authorizationHeaders(latest, String.valueOf(request.get("method")), String.valueOf(request.get("url")), request.get("body") instanceof String body ? body : null);
         }, interval);
+        receiver.on("*", Demo::rememberEvent);
         try {
             receiver.start();
             if (grant.subject != null) receiver.track(SessionIndex.fromPerson(grant.grantId == null ? grant.subject.sub : grant.grantId, grant.subject, grant.expiresAt));
+            Object streamId = receiver.stream() == null ? "" : receiver.stream().get("stream_id");
+            receiverState = "polling stream " + streamId + " at " + transmitter;
         } catch (Exception err) {
             Caught.error(err);
             System.out.println("ssf: not started: " + err.getMessage());
+            receiverState = "not running: " + err.getMessage();
             receiver = null;
         }
     }

@@ -294,8 +294,52 @@ def plan_for(files, base, test_user, key_json):
     return calls
 
 
+class _Answer:
+    def __init__(self, status, body):
+        self.status = status
+        self.body = body
+
+
+def _send_stdlib(url, method, headers, body):
+    """The same call as the library's HTTP helper, for a checkout that has not installed it."""
+    import http.client
+    import ssl
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise RuntimeError(f"{url} is not an http(s) URL")
+    payload = None if body is None else body.encode("utf-8")
+    outgoing = {str(name): str(value) for name, value in (headers or {}).items()}
+    if payload is not None:
+        outgoing["content-length"] = str(len(payload))
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    if parts.scheme == "https":
+        conn = http.client.HTTPSConnection(parts.hostname, port, context=context, timeout=15)
+    else:
+        conn = http.client.HTTPConnection(parts.hostname, port, timeout=15)
+    try:
+        conn.request(method, path, body=payload, headers=outgoing)
+        response = conn.getresponse()
+        raw = response.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024:
+            raise RuntimeError(f"{url} answered more than 2 MiB")
+        return _Answer(response.status, raw.decode("utf-8", "replace"))
+    finally:
+        conn.close()
+
+
 def _send(url, method, headers, body):
-    from gnap_caep_risc.http import send
+    try:
+        from gnap_caep_risc.http import send
+    except ImportError:
+        return _send_stdlib(url, method, headers, body)
     return send(url, method=method, headers=headers, body=body, tls={"reject_unauthorized": False}, code="config")
 
 
@@ -488,6 +532,14 @@ def main(argv=None):
             continue
         answered = api(call["path"][len(f"{base}/admin-api"):], call["body"])
         errors = " ".join(_errors(answered["body"]))
+        # Current iya-sts main accepts access_token, id_token, userinfo,
+        # saml2, saml11, and kerberos-pac. gnap_access_token is newer. The
+        # uid claim is not required to sign in.
+        if (call["path"].endswith("/applications/set-custom-claim")
+                and not answered["body"].get("ok")
+                and "not one of" in errors):
+            print(f"  {call['why']}: this iya-sts has no {call['body'].get('set')} claim set; continuing.")
+            continue
         if not answered["body"].get("ok") and "already" not in errors.lower():
             raise RuntimeError(f"{call['why']}: refused: {json.dumps(answered['body'])[:400]}")
         if not answered["body"].get("ok"):

@@ -7,17 +7,21 @@ import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509ExtendedKeyManager;
 import javax.net.ssl.X509TrustManager;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.Socket;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
+import java.security.Principal;
 import java.security.PrivateKey;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
@@ -206,6 +210,45 @@ public final class Http {
         store.setKeyEntry("client", privateKey, new char[0], chain.toArray(Certificate[]::new));
         KeyManagerFactory managers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         managers.init(store, new char[0]);
-        return managers.getKeyManagers();
+        KeyManager[] found = managers.getKeyManagers();
+        for (int i = 0; i < found.length; i++) {
+            if (found[i] instanceof X509ExtendedKeyManager extended) found[i] = new ClientKeyManager(extended);
+        }
+        return found;
+    }
+
+    /** GNAP registers the certificate by value. The server names its own CA, so the default manager would send no certificate. */
+    private static final class ClientKeyManager extends X509ExtendedKeyManager {
+        private final X509ExtendedKeyManager inner;
+
+        ClientKeyManager(X509ExtendedKeyManager inner) { this.inner = inner; }
+
+        public String chooseClientAlias(String[] keyType, Principal[] issuers, Socket socket) {
+            return inner.chooseClientAlias(keyType, null, socket);
+        }
+
+        public String chooseEngineClientAlias(String[] keyType, Principal[] issuers, SSLEngine engine) {
+            return inner.chooseEngineClientAlias(keyType, null, engine);
+        }
+
+        public String[] getClientAliases(String keyType, Principal[] issuers) {
+            return inner.getClientAliases(keyType, null);
+        }
+
+        public String chooseServerAlias(String keyType, Principal[] issuers, Socket socket) {
+            return inner.chooseServerAlias(keyType, issuers, socket);
+        }
+
+        public String chooseEngineServerAlias(String keyType, Principal[] issuers, SSLEngine engine) {
+            return inner.chooseEngineServerAlias(keyType, issuers, engine);
+        }
+
+        public String[] getServerAliases(String keyType, Principal[] issuers) {
+            return inner.getServerAliases(keyType, issuers);
+        }
+
+        public X509Certificate[] getCertificateChain(String alias) { return inner.getCertificateChain(alias); }
+
+        public PrivateKey getPrivateKey(String alias) { return inner.getPrivateKey(alias); }
     }
 }

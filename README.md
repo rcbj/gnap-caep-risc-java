@@ -14,6 +14,8 @@ docker build --target test .
 
 That target runs the suite in the Maven image. The demo image is a later stage and does not run the suite. `docker compose up --build` builds that image and starts the demo.
 
+`python3 scripts/live_iya_sts.py` is the live half. It builds this demo image, starts a fresh iya-sts when `IYA_STS_URL` is unset, registers the demo with `python3 scripts/configure_iya_sts.py` on the host, signs in, and requires a credential-change event and a session-revoked event on `GET /live-status`. The second event ends the local session. It never binds port 3000 or 8081. The nightly workflow runs the unit suite and this script.
+
 The artifact is `com.iyasec:gnap-caep-risc:0.1.0`. Maven publishing is not set up yet.
 
 ## Three calls
@@ -44,7 +46,7 @@ GnapClient.Finished done = gnap.finishRedirect(query, List.of(started.pending.id
 docker compose up --build
 ```
 
-`PORT` defaults to 3000 and is the bind port. Loopback finish and display URLs follow `PORT`. Any other host is left as written. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `ok`. The home page has a sign-in control; `/login` starts a grant, `/callback` finishes it, and `POST /logout` signs out.
+`PORT` defaults to 3000 and is the bind port. Loopback finish and display URLs follow `PORT`. Any other host is left as written. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `ok`. The home page has a sign-in control; `/login` starts a grant, `/callback` finishes it, and `POST /logout` signs out. `GET /live-status` is JSON for the sign-in and the Shared Signals events this process has accepted: `signedIn`, `subject`, `receiver`, and events of `type` and `jti`. It does not include tokens.
 
 The shipped `demo/gnap.json` leaves `signals` on by omitting the key. Key material is `file:` or `env:` and is not in the tree. Generate a key, then register the application with the Python registrar in this repo:
 
