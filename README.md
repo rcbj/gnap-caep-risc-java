@@ -14,7 +14,9 @@ docker build --target test .
 
 That target runs the suite in the Maven image. The demo image is a later stage and does not run the suite. `docker compose up --build` builds that image and starts the demo.
 
-`python3 scripts/live_iya_sts.py` is the live half. It builds this demo image, starts a fresh iya-sts when `IYA_STS_URL` is unset, registers the demo with `python3 scripts/configure_iya_sts.py` on the host, signs in, and requires a credential-change event and a session-revoked event on `GET /live-status`. The second event ends the local session. It never binds port 3000 or 8081. The nightly workflow runs the unit suite and this script.
+The suite includes `TrustChainTest`, which runs the install script's trust-chain code (Python, installed in the `test` stage) against an HTTPS stub on a four-certificate chain and checks the library trusts the stub through the file it wrote, trusts a reissued leaf from the same CA, and refuses a forged leaf and a wrong host name.
+
+`python3 scripts/live_iya_sts.py` is the live half. It starts a fresh iya-sts when `IYA_STS_URL` is unset, runs `python3 scripts/configure_iya_sts.py` on the host in a scratch copy of this checkout (it registers the demo, writes the client key and certificate, and writes the `tlsCa` chain), then builds this demo image from it, checks the image carries the chain and no key, starts the demo with only the key and certificate files mounted and `TLS_CA_REFRESH=0`, signs in, and requires a credential-change event and a session-revoked event on `GET /live-status`. The second event ends the local session. It never binds port 3000, 8081 or 18481-18495; its defaults are 18548 (`LIVE_STS_PORT`) and 18648 (`LIVE_DEMO_PORT`). Secrets go to `docker run` as `-e NAME`. The nightly workflow runs the unit suite and this script.
 
 The artifact is `com.iyasec:gnap-caep-risc:0.1.0`. Maven publishing is not set up yet.
 
@@ -55,6 +57,16 @@ ADMIN_API_CLIENT_SECRET=… python3 scripts/configure_iya_sts.py --config demo/g
 ```
 
 `--dry-run` prints the admin API calls and sends nothing. When the `gnap-demo` container is running, its `PORT` wins over the shell `PORT`.
+
+## The iya-sts trust chain (`tlsCa`)
+
+`tlsCa` in `demo/gnap.json` names the iya-sts TLS listener CA trust chain the library trusts. The default is `generated/idp-ca.pem`, relative to `demo/`. The value may also be `file:<path>`, `env:<NAME>`, or the PEM itself. Every certificate in it is a trust anchor, and the listener's presented chain must verify (PKIX) to one of them, so a reissued listener certificate under the same CA is still trusted. A certificate that only appears in the presented chain is not enough. The host name is checked against the certificate's subject alternative names unless `rejectUnauthorized` is false.
+
+`scripts/configure_iya_sts.py`, the install script, writes that file. It saves the whole chain iya-sts publishes at `GET /tls/server-certificate` (leaf, TLS Issuing CA, Intermediate, Root), or the chain from the TLS handshake when that path does not answer. It prints the path, the trust anchor's subject and its SHA-256 fingerprint. Compare the anchor with the Root CA on iya-sts's PKI page.
+
+The demo image build copies that file into the image at `/app/demo/generated/idp-ca.pem`, so the image trusts that iya-sts with no bind mount and no fetch. Run the install script before you build the image. Rebuild the image after running the install script against a different iya-sts. `.dockerignore` admits only that file from `demo/generated`. The client's private key and certificate (`generated/client.key`, `generated/client.crt`) never go into the image; compose mounts `demo/generated` at run time. A build with no chain file yet (a fresh clone, CI) still succeeds; the image then has no `tlsCa` file.
+
+The container entrypoint also refreshes the file from the provider at start (`com.iyasec.gnap.demo.TrustChain`), because a development iya-sts makes a new CA when it restarts. A failed refresh keeps the file from the build. `TLS_CA_REFRESH=0` turns the refresh off. `python3 scripts/trust_chain.py --config demo/gnap.json` refreshes it by hand.
 
 ## Errors
 
