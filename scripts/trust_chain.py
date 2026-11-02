@@ -5,10 +5,13 @@
 
 GET /tls/server-certificate is tried first, with verification off. If that document is missing, the
 handshake's own chain is used. A failure of this program leaves the file as it is and exits 0.
+Certificate names and the self-signed check come from openssl, the SHA-256 from hashlib: no
+package beyond the standard library.
 
     python scripts/trust_chain.py --config demo/gnap.json
 """
 
+import hashlib
 import json
 import os
 import re
@@ -40,11 +43,29 @@ def _certs(pem):
     return CERT_RE.findall(str(pem or ""))
 
 
+def _names(pem):
+    """(subject, issuer) in RFC 2253 form, from openssl."""
+    done = subprocess.run(
+        ["openssl", "x509", "-noout", "-subject", "-issuer", "-nameopt", "RFC2253"],
+        input=str(pem).encode(), capture_output=True, timeout=TIMEOUT_S, check=False,
+    )
+    if done.returncode != 0:
+        raise RuntimeError("could not read a certificate")
+    subject = issuer = ""
+    for line in done.stdout.decode("utf-8", "replace").splitlines():
+        if line.startswith("subject="):
+            subject = line[len("subject="):].strip()
+        elif line.startswith("issuer="):
+            issuer = line[len("issuer="):].strip()
+    if not subject or not issuer:
+        raise RuntimeError("could not read a certificate name")
+    return subject, issuer
+
+
 def _subject(pem):
     try:
-        from cryptography import x509
-        cert = x509.load_pem_x509_certificate(pem.encode())
-        return cert.subject.rfc4514_string(), cert.fingerprint(__import__("cryptography.hazmat.primitives.hashes", fromlist=["hashes"]).SHA256()).hex()
+        subject, _issuer = _names(pem)
+        return subject, hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem.strip())).hexdigest()
     except Exception:
         return pem.split("BEGIN CERTIFICATE", 1)[0].strip() or "certificate", ""
 
@@ -54,12 +75,10 @@ def bundle_of(blocks):
         raise RuntimeError("the trust chain has no certificates")
     anchor = blocks[-1]
     for block in reversed(blocks):
-        subject, _digest = _subject(block)
         # A self-signed certificate is the trust anchor when subject and issuer match.
         try:
-            from cryptography import x509
-            cert = x509.load_pem_x509_certificate(block.encode())
-            if cert.subject == cert.issuer:
+            subject, issuer = _names(block)
+            if subject == issuer:
                 anchor = block
                 break
         except Exception:
@@ -93,6 +112,7 @@ def fetch_published(origin):
     port = parts.port or 443
     target = f"{parts.scheme}://{host}:{port}/tls/server-certificate" if port not in (443,) else f"{parts.scheme}://{host}/tls/server-certificate"
     context = ssl._create_unverified_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     raw = b""
     status = 0
     conn_host = host
@@ -127,14 +147,13 @@ def fetch_handshake(origin):
     except Exception:
         pass
     context = ssl._create_unverified_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     with socket.create_connection((host, port), timeout=TIMEOUT_S) as sock:
         with context.wrap_socket(sock, server_hostname=servername) as tls:
             der = tls.getpeercert(binary_form=True)
     if not der:
         raise RuntimeError(f"{origin} presented no certificate")
-    from cryptography import x509
-    from cryptography.hazmat.primitives import serialization
-    pem = x509.load_der_x509_certificate(der).public_bytes(serialization.Encoding.PEM).decode()
+    pem = ssl.DER_cert_to_PEM_cert(der)
     return bundle_of([pem])
 
 
