@@ -125,6 +125,7 @@ class Client:
     def __init__(self, ca_file):
         self.jar = http.cookiejar.CookieJar(policy=LoopbackCookiePolicy())
         self.ssl = ssl.create_default_context(cafile=str(ca_file))
+        self.ssl.minimum_version = ssl.TLSVersion.TLSv1_2
 
     def request(self, method, url, body=None, headers=None, timeout=60):
         parts = urllib.parse.urlsplit(url)
@@ -210,31 +211,6 @@ def docker_rm(name):
     subprocess.run(["docker", "rm", "-f", name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def ensure_cryptography():
-    probe = subprocess.run(
-        ["python3", "-c", "import cryptography"],
-        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    if probe.returncode == 0:
-        return
-    print("installing cryptography for scripts/configure_iya_sts.py", flush=True)
-    pip = subprocess.run([sys.executable, "-m", "pip", "install", "cryptography"], check=False)
-    if pip.returncode != 0:
-        pip = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--user", "--break-system-packages", "cryptography"],
-            check=False,
-        )
-    if pip.returncode != 0 and shutil.which("sudo") and shutil.which("apt-get"):
-        run(["sudo", "apt-get", "update"])
-        run(["sudo", "apt-get", "install", "-y", "python3-cryptography"])
-    probe = subprocess.run(
-        ["python3", "-c", "import cryptography"],
-        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    if probe.returncode != 0:
-        raise RuntimeError("scripts/configure_iya_sts.py needs Python's cryptography package")
-
-
 def wait_port(port, timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -250,6 +226,7 @@ def wait_ready(origin, timeout):
     """Wait for discovery to answer. Readiness only: nothing is trusted from it."""
     parts = urllib.parse.urlsplit(origin)
     context = ssl._create_unverified_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
@@ -346,49 +323,25 @@ def ensure_client_key(config_path):
     cert_path = material_path(raw.get("certificate"))
     if key_path is None or cert_path is None or (key_path.is_file() and cert_path.is_file()):
         return
-    import datetime
-
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import NameOID
-
-    key = ec.generate_private_key(ec.SECP256R1())
-    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "gnap-caep-risc-demo")])
-    now = datetime.datetime.now(datetime.timezone.utc)
-    certificate = (
-        x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(subject)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(minutes=1))
-        .not_valid_after(now + datetime.timedelta(days=1095))
-        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-        .add_extension(
-            x509.KeyUsage(
-                digital_signature=True,
-                content_commitment=False,
-                key_encipherment=False,
-                data_encipherment=False,
-                key_agreement=False,
-                key_cert_sign=False,
-                crl_sign=False,
-                encipher_only=False,
-                decipher_only=False,
-            ),
-            critical=True,
-        )
-        .sign(key, hashes.SHA256())
-    )
+    # openssl, not a Python package: the host needs nothing beyond python3's
+    # standard library and the openssl the trust chain already uses. The key is
+    # PKCS#8 P-256; the certificate self-signed, not a CA, digitalSignature only.
     key_path.parent.mkdir(parents=True, exist_ok=True)
     cert_path.parent.mkdir(parents=True, exist_ok=True)
-    key_path.write_bytes(key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    ))
-    cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    with tempfile.TemporaryDirectory() as scratch:
+        conf = Path(scratch) / "client.cnf"
+        conf.write_text(
+            "[req]\ndistinguished_name = dn\nprompt = no\nx509_extensions = ext\n"
+            "[dn]\nCN = gnap-caep-risc-demo\n"
+            "[ext]\nbasicConstraints = critical, CA:FALSE\nkeyUsage = critical, digitalSignature\n",
+            encoding="utf-8",
+        )
+        run([
+            "openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+            "-nodes", "-sha256", "-days", "1095", "-config", str(conf),
+            "-keyout", str(key_path), "-out", str(cert_path),
+        ], capture_output=True)
+    os.chmod(key_path, 0o600)
 
 
 def json_body(payload):
@@ -412,6 +365,24 @@ def autopost_form(payload):
     return None
 
 
+# The paths a trace line may name. A trace line carries a constant from this
+# list, never text from the URL, so nothing the sign-in carries reaches a log.
+LOG_PATHS = (
+    "/authn-api/pending/",
+    "/authn-api/consent/",
+    "/authn-api/mfa/",
+    "/authn/login",
+    "/authn/mfa-setup",
+    "/authn/post-login",
+    "/oauth2/consent",
+    "/gnap/approve/",
+    "/gnap",
+    "/login",
+    "/callback",
+    "/live-status",
+)
+
+
 class Driver:
     def __init__(self, client, sts_origin, demo_origin, username, password):
         self.client = client
@@ -423,9 +394,18 @@ class Driver:
     def sts(self, url):
         return origin_of(url).rstrip("/") == self.sts_origin
 
+    def label(self, url):
+        """A constant naming where a request went, never text from the URL."""
+        where = "iya-sts" if self.sts(url) else "demo" if origin_of(url).rstrip("/") == self.demo_origin else "elsewhere"
+        path = path_of(url)
+        for known in LOG_PATHS:
+            if path.startswith(known):
+                return f"{where} {known}"
+        return f"{where} (another path)"
+
     def get(self, url):
         status, headers, payload = self.client.request("GET", url, headers={"accept": "text/html,application/json"})
-        print(f"GET {status} {url}", flush=True)
+        print(f"GET {status} {self.label(url)}", flush=True)
         return status, headers, payload
 
     def post_json(self, url, body, csrf):
@@ -436,7 +416,7 @@ class Driver:
             "origin": self.sts_origin,
             "x-csrf-token": csrf,
         })
-        print(f"POST {status} {url}", flush=True)
+        print(f"POST {status} {self.label(url)}", flush=True)
         return status, headers, payload
 
     def open_view(self, shell_url, api_url):
@@ -444,7 +424,7 @@ class Driver:
         if status in (301, 302, 303, 307, 308):
             return {"redirect": resolve_url(shell_url, one_header(headers, "location"))}
         view_status, _headers, view_payload = self.client.request("GET", api_url, headers={"accept": "application/json"})
-        print(f"GET {view_status} {api_url}", flush=True)
+        print(f"GET {view_status} {self.label(api_url)}", flush=True)
         parsed = json_body(view_payload) or {}
         if view_status in (301, 302, 303, 307, 308):
             return {"redirect": resolve_url(api_url, one_header(_headers, "location"))}
@@ -494,7 +474,7 @@ class Driver:
                 "content-type": "application/x-www-form-urlencoded",
                 "origin": origin_of(url),
             })
-            print(f"POST {posted} {action}", flush=True)
+            print(f"POST {posted} {self.label(action)}", flush=True)
             if posted in (301, 302, 303, 307, 308):
                 return resolve_url(action, one_header(post_headers, "location"))
             if origin_of(action).rstrip("/") == self.demo_origin:
@@ -690,7 +670,6 @@ def prepare_sts(sts_port, secret):
 
 def configure_demo(context, config, sts_origin, demo_origin, username):
     """The install script, on the host, in the build context: it writes tlsCa's file."""
-    ensure_cryptography()
     ensure_client_key(config)
     env = os.environ.copy()
     env["PUBLIC_URL"] = demo_origin
