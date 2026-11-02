@@ -1,5 +1,5 @@
 .git
-target
+**/target
 **/__pycache__
 # demo/generated holds the GNAP client's private key and certificate and any
 # other file the install script wrote. Only tlsCa's file, the iya-sts listener
