@@ -20,15 +20,21 @@ GnapClient.Finished done = gnap.finishRedirect(query, List.of(started.pending.id
 docker build --target test .
 ```
 
-The `test` stage runs `mvn -B test` in `maven:3.9.9-eclipse-temurin-17`. GitHub Actions uses that command. Do not run Maven on the host. The demo stage packages with `-DskipTests` in its own Maven image. Tests use an in-process stub on 127.0.0.1. They do not need a live authorization server.
+The `test` stage runs `mvn -B test` (both modules) in `maven:3.9.9-eclipse-temurin-17`. GitHub Actions uses that command. Do not run Maven on the host. The demo stage packages with `-DskipTests` in its own Maven image. Tests use an in-process stub on 127.0.0.1. They do not need a live authorization server.
 
 The stub tests do not start iya-sts. The `test` stage installs `python3` and `openssl` for `TrustChainTest`. The scripts need only Python's standard library and the `openssl` command: no `pip install` on the host. `python3 scripts/live_iya_sts.py` does start one, unless `IYA_STS_URL` names one that is already running. It runs the install script (`python3 scripts/configure_iya_sts.py`, on the host; it does not import Java) in a scratch copy of this checkout, which writes the client key and certificate and the `tlsCa` chain, then builds the demo image (which carries the chain and no key), starts it with `TLS_CA_REFRESH=0`, no CA mount and only the key and certificate files mounted, signs the demo in and checks two Shared Signals events on `GET /live-status`. The nightly workflow runs the unit suite and this script. It never binds port 3000, 8081 or 18481-18495; the defaults are 18548 and 18648. Secrets go to `docker run` as `-e NAME`. No script prints a password or secret, or a URL (trace lines carry fixed labels); a generated test-user password goes to `demo/generated/<user>.password` (mode 0600) and only that path is printed. Every `ssl` context in `scripts/` sets TLS 1.2 as the minimum.
 
 ## Layout
 
-- `src/main/java/com/iyasec/gnap/` the client, key proofs (mtls, httpsig, jwsd), and `ssf/` (one poll stream)
-- `src/test/java/com/iyasec/gnap/` config, subject, client, the Shared Signals receiver, and `TrustChainTest` (the install script writes the whole chain to `tlsCa`'s path; the library trusts the provider and a reissued leaf through it, and refuses a forged leaf and a wrong name)
-- `src/main/java/com/iyasec/gnap/demo/Demo` the HTTP demo; `demo/gnap.json` the sample configuration
+Two Maven modules under an aggregator `pom.xml` (which builds both and is never published):
+
+- `library/` is `com.iyasec:gnap-caep-risc`, the library alone. Its `pom.xml` inherits nothing, so it is complete as published, and its jar carries no demo class and no bundled dependency.
+  - `library/src/main/java/com/iyasec/gnap/` the client, key proofs (mtls, httpsig, jwsd), and `ssf/` (one poll stream)
+  - `library/src/test/java/com/iyasec/gnap/` config, subject, client, and the Shared Signals receiver
+- `demo/` is `com.iyasec:gnap-caep-risc-demo`, never published. It depends on the library and shades one runnable jar, which the image runs as `/app/gnap-caep-risc.jar`.
+  - `demo/src/main/java/com/iyasec/gnap/demo/` `Demo` (the HTTP demo), `HealthCheck`, `Redirects`, `TrustChain`; `demo/gnap.json` the sample configuration; `demo/public/` the pages
+  - `demo/src/test/java/com/iyasec/gnap/TrustChainTest` (the install script writes the whole chain to `tlsCa`'s path; the library trusts the provider and a reissued leaf through it, and refuses a forged leaf and a wrong name). It runs from the repository root, where `scripts/` and `demo/gnap.json` are.
+- Keep the three `<version>`s (aggregator, library, demo) equal to `VERSION`.
 - `scripts/configure_iya_sts.py` registers the app; `scripts/live_iya_sts.py` signs in against iya-sts; `scripts/redirects.py` and `scripts/trust_chain.py` (`save_trust_chain()`) support registration; the install script writes the listener CA trust chain to the file `tlsCa` names
 
 ## The iya-sts trust chain (`tlsCa`)
