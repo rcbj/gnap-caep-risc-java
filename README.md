@@ -4,13 +4,17 @@ A server-side [GNAP](https://www.rfc-editor.org/rfc/rfc9635) client. The key is 
 
 The private key stays in this process. The same `gnap.json` shape as the Node library loads: the JSON keys are identical.
 
-## Install from a checkout
+## Build and tests
+
+The build and the tests run in a container.
 
 ```bash
-mvn -B test
+docker build --target test .
 ```
 
-The artifact is `com.iyasec:gnap-caep-risc:0.1.0`. Depend on it from this checkout with `mvn install` into the local repository, or add this directory as a module. Maven publishing is not set up yet.
+That target runs the suite in the Maven image. The demo image is a later stage and does not run the suite. `docker compose up --build` builds that image and starts the demo.
+
+The artifact is `com.iyasec:gnap-caep-risc:0.1.0`. Maven publishing is not set up yet.
 
 ## Three calls
 
@@ -37,7 +41,7 @@ GnapClient.Finished done = gnap.finishRedirect(query, List.of(started.pending.id
 ## Demo
 
 ```bash
-mvn -q exec:java
+docker compose up --build
 ```
 
 `PORT` defaults to 3000 and is the bind port. Loopback finish and display URLs follow `PORT`. Any other host is left as written. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `ok`. The home page has a sign-in control; `/login` starts a grant, `/callback` finishes it, and `POST /logout` signs out.

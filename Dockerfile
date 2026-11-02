@@ -1,4 +1,13 @@
 # syntax=docker/dockerfile:1
+
+# `docker build --target test` runs the suite in this image.
+# The demo image below does not run it.
+FROM maven:3.9.9-eclipse-temurin-17 AS test
+WORKDIR /src
+COPY pom.xml .
+COPY src src
+RUN mvn -B test
+
 FROM maven:3.9.9-eclipse-temurin-17 AS build
 WORKDIR /src
 COPY pom.xml .

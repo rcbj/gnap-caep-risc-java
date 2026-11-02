@@ -17,10 +17,10 @@ GnapClient.Finished done = gnap.finishRedirect(query, List.of(started.pending.id
 ## Tests
 
 ```bash
-mvn -B test
+docker build --target test .
 ```
 
-Tests use an in-process stub on 127.0.0.1. They do not need a live authorization server.
+The `test` stage runs `mvn -B test` in `maven:3.9.9-eclipse-temurin-17`. GitHub Actions uses that command. Do not run Maven on the host. The demo stage packages with `-DskipTests` in its own Maven image. Tests use an in-process stub on 127.0.0.1. They do not need a live authorization server.
 
 ## Layout
 
@@ -31,7 +31,7 @@ Tests use an in-process stub on 127.0.0.1. They do not need a live authorization
 
 ## Demo
 
-`mvn -q exec:java` starts `com.iyasec.gnap.demo.Demo`. `PORT` defaults to 3000 and is the bind port. Loopback redirect and finish URLs follow `PORT`. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `ok`. `ssf.pollIntervalMs` is a millisecond interval.
+`docker compose up --build` builds the demo image and starts `com.iyasec.gnap.demo.Demo` in that container. `PORT` defaults to 3000 and is the bind port. Loopback redirect and finish URLs follow `PORT`. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `ok`. `ssf.pollIntervalMs` is a millisecond interval.
 
 ## Signals
 
