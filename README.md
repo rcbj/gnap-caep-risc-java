@@ -12,7 +12,7 @@ The build and the tests run in a container.
 docker build --target test .
 ```
 
-That target runs the suite in the Maven image. The demo image is a later stage and does not run the suite. `docker compose up --build` builds that image and starts the demo.
+That target runs the suite in the Maven image. The repository has two Maven modules: `library/` is the library (`com.iyasec:gnap-caep-risc`, nothing else in its jar) and `demo/` is the demo, which depends on it and is never published. The demo image is a later stage and does not run the suite. `docker compose up --build` builds that image and starts the demo.
 
 The suite includes `TrustChainTest`, which runs the install script's trust-chain code (Python, installed in the `test` stage) against an HTTPS stub on a four-certificate chain and checks the library trusts the stub through the file it wrote, trusts a reissued leaf from the same CA, and refuses a forged leaf and a wrong host name.
 

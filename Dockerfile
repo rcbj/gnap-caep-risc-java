@@ -6,8 +6,12 @@ FROM maven:3.9.9-eclipse-temurin-17 AS test
 # TrustChainTest runs the install script's trust-chain code, which is Python.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
+# Both modules: library/ (the published library) and demo/ (the demo, and
+# TrustChainTest, which runs scripts/ against demo/gnap.json).
 COPY pom.xml .
-COPY src src
+COPY library library
+COPY demo/pom.xml demo/pom.xml
+COPY demo/src demo/src
 COPY scripts scripts
 COPY demo/gnap.json demo/gnap.json
 RUN mvn -B test
@@ -15,12 +19,16 @@ RUN mvn -B test
 FROM maven:3.9.9-eclipse-temurin-17 AS build
 WORKDIR /src
 COPY pom.xml .
-COPY src src
+COPY library library
+COPY demo/pom.xml demo/pom.xml
+COPY demo/src demo/src
 RUN mvn -B -DskipTests package
 
 FROM eclipse-temurin:17-jre
 WORKDIR /app
-COPY --from=build /src/target/gnap-caep-risc-0.1.0.jar /app/gnap-caep-risc.jar
+# The demo module's runnable jar (the demo, the library and its dependencies),
+# under the name the entrypoint and the health check have always used.
+COPY --from=build /src/demo/target/gnap-caep-risc-demo-0.1.0.jar /app/gnap-caep-risc.jar
 COPY scripts scripts
 # The demo, and with it tlsCa's file: demo/generated/idp-ca.pem, the iya-sts
 # listener CA trust chain scripts/configure_iya_sts.py saved. The image trusts
