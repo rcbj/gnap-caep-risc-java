@@ -49,8 +49,10 @@ def usage():
                   URI follows the running demo's PORT, then $PORT. A non-loopback finish URI is
                   left as written.
   --test-user     The test user to create (default: gnap-demo-user). Its password is
-                  $GNAP_DEMO_USER_PASSWORD, or one is generated and printed once. With that variable
-                  set, an existing user's password is replaced.
+                  $GNAP_DEMO_USER_PASSWORD, or one is generated and written to
+                  generated/<user>.password beside the configuration (mode 0600); only
+                  the path is printed. With that variable set, an existing user's
+                  password is replaced.
   --no-test-user  Do not create a test user.
   --dry-run       Print what would be done, and send nothing.
 
@@ -318,6 +320,7 @@ def _send_stdlib(url, method, headers, body):
     if parts.query:
         path += "?" + parts.query
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
     if parts.scheme == "https":
@@ -398,15 +401,16 @@ def _public_key_fallback(config_path):
         full = Path(path) if os.path.isabs(path) else base / path
         return full.read_text(encoding="utf-8")
 
-    from cryptography import x509
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import ec
-    private = serialization.load_pem_private_key(material(raw.get("privateKey"), "privateKey").encode(), password=None)
     proof = str(raw.get("keyProof") or ("mtls" if raw.get("certificate") else "httpsig"))
     if proof == "mtls":
+        # The certificate alone: an mtls key proof needs no package beyond the
+        # standard library.
         cert = material(raw.get("certificate"), "certificate")
         block = cert[cert.find("-----BEGIN CERTIFICATE-----"):cert.find("-----END CERTIFICATE-----") + len("-----END CERTIFICATE-----")]
         return json.dumps({"proof": "mtls", "cert": block.strip()})
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    private = serialization.load_pem_private_key(material(raw.get("privateKey"), "privateKey").encode(), password=None)
     if not isinstance(private, ec.EllipticCurvePrivateKey):
         raise RuntimeError("the fallback registrar loads an EC key; install gnap-caep-risc for other key types")
     size = (private.curve.key_size + 7) // 8
@@ -573,7 +577,16 @@ def main(argv=None):
                 raise RuntimeError(f"creating {args['test_user']} was refused: {json.dumps(made['body'])[:300]}")
             print(f"Created user {args['test_user']}.")
             if made["body"].get("password"):
-                print(f"Generated password for {args['test_user']} (shown once): {made['body']['password']}")
+                # Never printed: a password does not belong in a log. It goes to
+                # a file only its owner can read, created 0600, beside the client
+                # key (demo/generated, which never enters an image).
+                saved = Path(args["config"]).resolve().parent / "generated" / f"{args['test_user']}.password"
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                descriptor = os.open(saved, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as out:
+                    os.fchmod(out.fileno(), 0o600)
+                    out.write(made["body"]["password"] + "\n")
+                print(f"Generated a password for {args['test_user']}; it is in {saved} (readable by you only).")
         for call in plan:
             if not call["path"].endswith("/groups/add-member"):
                 continue

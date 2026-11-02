@@ -4,7 +4,7 @@
 # The demo image below does not run it.
 FROM maven:3.9.9-eclipse-temurin-17 AS test
 # TrustChainTest runs the install script's trust-chain code, which is Python.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-cryptography && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY pom.xml .
 COPY src src
