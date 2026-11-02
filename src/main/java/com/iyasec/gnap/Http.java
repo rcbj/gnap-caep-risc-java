@@ -143,14 +143,29 @@ public final class Http {
                 if (manager instanceof X509TrustManager x509) fallback = x509;
             }
             X509TrustManager system = fallback;
+            X509TrustManager pinned = pins.isEmpty() ? null : anchoredAt(pins);
             trust = new TrustManager[]{new X509TrustManager() {
                 public void checkClientTrusted(X509Certificate[] chain, String auth) throws CertificateException {
                     if (system != null) system.checkClientTrusted(chain, auth);
                 }
                 public void checkServerTrusted(X509Certificate[] chain, String auth) throws CertificateException {
-                    if (pinned(chain, pins)) return;
-                    if (system != null) system.checkServerTrusted(chain, auth);
-                    else throw new CertificateException("no trust manager");
+                    CertificateException refused = null;
+                    if (pinned != null) {
+                        try {
+                            pinned.checkServerTrusted(chain, auth);
+                            return;
+                        } catch (CertificateException err) {
+                            Caught.warn(err);
+                            refused = err;
+                        }
+                    }
+                    if (system == null) throw refused != null ? refused : new CertificateException("no trust manager");
+                    try {
+                        system.checkServerTrusted(chain, auth);
+                    } catch (CertificateException err) {
+                        if (refused != null) err.addSuppressed(refused);
+                        throw err;
+                    }
                 }
                 public X509Certificate[] getAcceptedIssuers() {
                     return system == null ? new X509Certificate[0] : system.getAcceptedIssuers();
@@ -166,20 +181,23 @@ public final class Http {
         return context;
     }
 
-    private static boolean pinned(X509Certificate[] chain, List<X509Certificate> pins) {
-        if (pins.isEmpty() || chain == null) return false;
-        try {
-            for (X509Certificate presented : chain) {
-                byte[] left = Json.sha256(presented.getEncoded());
-                for (X509Certificate pin : pins) {
-                    if (java.security.MessageDigest.isEqual(left, Json.sha256(pin.getEncoded()))) return true;
-                }
-            }
-        } catch (Exception err) {
-            Caught.warn(err);
-            return false;
+    /**
+     * Every certificate in tlsCa's file is a trust anchor, and the presented chain must be
+     * built and verified to one of them (PKIX). The file is the whole listener CA trust chain
+     * (leaf, TLS Issuing CA, Intermediate, Root), so a reissued leaf from the same CA is trusted.
+     * A certificate that merely appears in the presented chain proves nothing: CA certificates
+     * are public, and anyone can send them after a leaf of their own.
+     */
+    private static X509TrustManager anchoredAt(List<X509Certificate> pins) throws Exception {
+        KeyStore anchors = KeyStore.getInstance("PKCS12");
+        anchors.load(null, null);
+        for (int i = 0; i < pins.size(); i++) anchors.setCertificateEntry("tls-ca-" + i, pins.get(i));
+        TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        factory.init(anchors);
+        for (TrustManager manager : factory.getTrustManagers()) {
+            if (manager instanceof X509TrustManager x509) return x509;
         }
-        return false;
+        throw new GnapError("config", "no X.509 trust manager for tlsCa");
     }
 
     private static List<X509Certificate> certificates(Object pem) {
