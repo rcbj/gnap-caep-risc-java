@@ -24,7 +24,7 @@ COPY demo/pom.xml demo/pom.xml
 COPY demo/src demo/src
 RUN mvn -B -DskipTests package
 
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:25-jre
 WORKDIR /app
 # The demo module's runnable jar (the demo, the library and its dependencies),
 # under the name the entrypoint and the health check have always used.
