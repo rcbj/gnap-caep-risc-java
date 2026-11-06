@@ -18,7 +18,7 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
-      <version>5.8.2</version>
+      <version>6.1.3</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -30,7 +30,7 @@
       </plugin>
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>2.22.2</version>
+        <version>3.6.1</version>
         <configuration>
           <!-- TrustChainTest runs scripts/ and reads demo/gnap.json from the repository root. -->
           <workingDirectory>${project.basedir}/..</workingDirectory>
