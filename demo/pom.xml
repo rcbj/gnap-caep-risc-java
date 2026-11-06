@@ -5,7 +5,7 @@
   <parent>
     <groupId>com.iyasec</groupId>
     <artifactId>gnap-caep-risc-build</artifactId>
-    <version>0.1.0</version>
+    <version>0.1.1</version>
   </parent>
   <artifactId>gnap-caep-risc-demo</artifactId>
   <name>gnap-caep-risc demo</name>

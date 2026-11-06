@@ -28,7 +28,7 @@ FROM eclipse-temurin:17-jre
 WORKDIR /app
 # The demo module's runnable jar (the demo, the library and its dependencies),
 # under the name the entrypoint and the health check have always used.
-COPY --from=build /src/demo/target/gnap-caep-risc-demo-0.1.0.jar /app/gnap-caep-risc.jar
+COPY --from=build /src/demo/target/gnap-caep-risc-demo-0.1.1.jar /app/gnap-caep-risc.jar
 COPY scripts scripts
 # The demo, and with it tlsCa's file: demo/generated/idp-ca.pem, the iya-sts
 # listener CA trust chain scripts/configure_iya_sts.py saved. The image trusts
