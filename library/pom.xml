@@ -5,7 +5,7 @@
        The demo is the sibling module ../demo, which is never published. -->
   <groupId>com.iyasec</groupId>
   <artifactId>gnap-caep-risc</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
   <name>gnap-caep-risc</name>
   <description>Server-side GNAP client with a registered key, key-bound tokens, and a CAEP and RISC receiver</description>
   <url>https://github.com/rcbj/gnap-caep-risc-java</url>
