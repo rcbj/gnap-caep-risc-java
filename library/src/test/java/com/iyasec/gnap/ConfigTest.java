@@ -74,4 +74,22 @@ class ConfigTest {
         assertEquals("config", err.code);
         assertEquals("signals must be true or false", err.getMessage());
     }
+
+    @Test
+    void addSubjectsDefaultsOnAndTakesOnlyABoolean() {
+        Config.Resolved on = resolve(Map.of("transmitterIssuer", "https://idp.example/issuer"));
+        assertTrue(on.addSubjects);
+        Config.Resolved off = resolve(Map.of(
+                "transmitterIssuer", "https://idp.example/issuer",
+                "ssf", Map.of("addSubjects", false)));
+        assertFalse(off.addSubjects);
+        GnapError err = assertThrows(GnapError.class, () -> resolve(Map.of(
+                "transmitterIssuer", "https://idp.example/issuer",
+                "ssf", Map.of("addSubjects", "no"))));
+        assertEquals("config", err.code);
+        assertEquals("ssf.addSubjects must be true or false", err.getMessage());
+        Config.Resolved unread = resolve(Map.of("ssf", Map.of("addSubjects", "no")));
+        assertTrue(unread.addSubjects);
+        assertEquals(null, unread.ssf);
+    }
 }

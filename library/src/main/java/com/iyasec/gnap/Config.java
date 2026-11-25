@@ -3,6 +3,8 @@
 
 package com.iyasec.gnap;
 
+import com.iyasec.pep.Pep;
+
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,6 +45,10 @@ public final class Config {
         public long transactionTtlSec = 600;
         /** Present only when signals stay on and a transmitter was named. */
         public Map<String, Object> ssf;
+        /** Add Subject for people signed in here. Default true; read only with a transmitter. */
+        public boolean addSubjects = true;
+        /** The embedded PEP, when the document has a {@code pep} section. Not started. */
+        public Pep pep;
     }
 
     public static Resolved readFile(String path) {
@@ -133,6 +139,7 @@ public final class Config {
         }
         String tlsCa = readTrust(doc.get("tlsCa"), base);
         Map<String, Object> ssf = null;
+        boolean addSubjects = true;
         if (!signalsOff) {
             Map<String, Object> rawSsf = Json.map(doc.get("ssf"));
             if (rawSsf == null) rawSsf = Map.of();
@@ -142,12 +149,22 @@ public final class Config {
                 if (!text.startsWith("https://") && !text.startsWith("http://")) {
                     throw new GnapError("config", "ssf.transmitter must be an http(s) URL");
                 }
+                if (rawSsf.containsKey("addSubjects") && !(rawSsf.get("addSubjects") instanceof Boolean)) {
+                    throw new GnapError("config", "ssf.addSubjects must be true or false");
+                }
+                if (rawSsf.get("addSubjects") instanceof Boolean flag) addSubjects = flag;
                 ssf = new LinkedHashMap<>();
                 ssf.put("transmitter", text);
                 if (rawSsf.get("pollIntervalMs") instanceof Number && ((Number) rawSsf.get("pollIntervalMs")).doubleValue() != 0) {
                     ssf.put("pollIntervalMs", rawSsf.get("pollIntervalMs"));
                 }
             }
+        }
+        Pep pep = null;
+        if (doc.get("pep") != null) {
+            Map<String, Object> section = Json.map(doc.get("pep"));
+            if (section == null) throw new GnapError("config", "pep must be an object");
+            pep = EmbeddedPep.build(section, grantEndpoint, application, ssf != null, tlsCa, base, key);
         }
         Map<String, Object> displayIn = Json.map(doc.get("display"));
         Map<String, Object> display = null;
@@ -178,6 +195,8 @@ public final class Config {
         if (doc.get("maxWaitSec") instanceof Number number) out.maxWaitSec = number.longValue();
         if (doc.get("transactionTtlSec") instanceof Number number) out.transactionTtlSec = number.longValue();
         out.ssf = ssf;
+        out.addSubjects = addSubjects;
+        out.pep = pep;
         return out;
     }
 

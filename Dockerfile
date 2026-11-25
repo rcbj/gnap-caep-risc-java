@@ -4,7 +4,8 @@
 # The demo image below does not run it.
 FROM maven:3.9-eclipse-temurin-26 AS test
 # TrustChainTest runs the install script's trust-chain code, which is Python.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl && rm -rf /var/lib/apt/lists/*
+# git fetches iya-pep at the pinned commit. The Maven image does not ship it.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl git ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 # Both modules: library/ (the published library) and demo/ (the demo, and
 # TrustChainTest, which runs scripts/ against demo/gnap.json).
@@ -14,15 +15,32 @@ COPY demo/pom.xml demo/pom.xml
 COPY demo/src demo/src
 COPY scripts scripts
 COPY demo/gnap.json demo/gnap.json
-RUN mvn -B test
+# com.iyasec:iya-pep is not on Maven Central yet. Install commit
+# d2bbf5ee73a93ec3b2aeb01219fc093fbb41c645 into this image. A fetch that
+# fails is left failed; do not retry.
+RUN git init /tmp/iya-pep-java \
+ && git -C /tmp/iya-pep-java remote add origin https://github.com/rcbj/iya-pep-java.git \
+ && git -C /tmp/iya-pep-java fetch --depth 1 origin d2bbf5ee73a93ec3b2aeb01219fc093fbb41c645 \
+ && git -C /tmp/iya-pep-java checkout --detach FETCH_HEAD \
+ && mvn -B -DskipTests -f /tmp/iya-pep-java/pom.xml install \
+ && mvn -B test
 
 FROM maven:3.9-eclipse-temurin-26 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY pom.xml .
 COPY library library
 COPY demo/pom.xml demo/pom.xml
 COPY demo/src demo/src
-RUN mvn -B -DskipTests package
+# Same install as the test stage. The stages are independent, so a demo image
+# build does not reuse the test stage's local repository. A fetch that fails
+# is left failed; do not retry.
+RUN git init /tmp/iya-pep-java \
+ && git -C /tmp/iya-pep-java remote add origin https://github.com/rcbj/iya-pep-java.git \
+ && git -C /tmp/iya-pep-java fetch --depth 1 origin d2bbf5ee73a93ec3b2aeb01219fc093fbb41c645 \
+ && git -C /tmp/iya-pep-java checkout --detach FETCH_HEAD \
+ && mvn -B -DskipTests -f /tmp/iya-pep-java/pom.xml install \
+ && mvn -B -DskipTests package
 
 FROM eclipse-temurin:25-jre
 WORKDIR /app

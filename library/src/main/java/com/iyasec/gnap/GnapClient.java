@@ -3,10 +3,16 @@
 
 package com.iyasec.gnap;
 
+import com.iyasec.pep.Access;
+import com.iyasec.pep.Decision;
+import com.iyasec.pep.Pep;
+import com.iyasec.pep.PepException;
+
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -20,7 +26,10 @@ import java.util.Set;
  */
 public final class GnapClient {
     private static final Set<String> FRONT = Set.of("access_token", "id_token", "token", "value", "continue", "refresh_token");
+    /** How many revoked continuation URIs {@link #decideGrant} remembers. */
+    private static final int REVOKED_REMEMBERED = 10_000;
     private final Config.Resolved config;
+    private final ArrayDeque<String> revoked = new ArrayDeque<>();
     private Map<String, Object> metadata;
     private String instanceId;
     private final List<String> subIdFormats;
@@ -36,11 +45,13 @@ public final class GnapClient {
     }
 
     public static GnapClient fromFile(String path) {
-        return new GnapClient(Config.readFile(path));
+        return create(Config.readFile(path));
     }
 
     public static GnapClient create(Config.Resolved config) {
-        return new GnapClient(config);
+        GnapClient client = new GnapClient(config);
+        client.startPep();
+        return client;
     }
 
     public static Config.Resolved resolve(Object raw, Path baseDir) {
@@ -50,6 +61,9 @@ public final class GnapClient {
     public Config.Resolved config() { return config; }
     public Keys.ClientKey key() { return config.key; }
     public String instanceId() { return instanceId; }
+
+    /** The embedded PEP, when the configuration has a {@code pep} section. */
+    public Pep pep() { return config.pep; }
 
     public Map<String, Object> tls() {
         Map<String, Object> out = new LinkedHashMap<>();
@@ -180,6 +194,57 @@ public final class GnapClient {
         if (grant.continuation == null) throw new GnapError("protocol", "this grant has no continuation, so it cannot be revoked");
         checkSameOrigin(grant.continuation.uri, "continue.uri");
         signedJson("DELETE", grant.continuation.uri, null, grant.continuation.accessToken);
+        rememberRevoked(grant.continuation.uri);
+    }
+
+    /**
+     * Decides one access for the person a grant named. With no {@code pep}
+     * section the answer is unavailable: nothing here permits by default.
+     * This does not throw.
+     */
+    public Decision decide(Subject.Person person, Access access) {
+        if (person == null) return EmbeddedPep.deny("the grant names no subject");
+        if (config.pep == null) return EmbeddedPep.unavailable("no pep section is configured");
+        try {
+            return config.pep.decide(EmbeddedPep.subjectFor(person), access);
+        } catch (RuntimeException err) {
+            Caught.error(err);
+            String why = err.getMessage();
+            return EmbeddedPep.unavailable(why == null || why.isBlank() ? "the PEP could not decide" : why);
+        }
+    }
+
+    /**
+     * {@link #decide} for a grant's subject. A grant that has ended is denied
+     * without asking: no subject, one this client revoked, or one whose
+     * access token has expired. This does not throw.
+     */
+    public Decision decideGrant(Grant grant, Access access) {
+        if (grant == null || grant.subject == null) return EmbeddedPep.deny("the grant names no subject");
+        if (grant.continuation != null && revoked.contains(grant.continuation.uri)) {
+            return EmbeddedPep.deny("the grant was revoked");
+        }
+        if (grant.expiresAt != null && grant.expiresAt <= System.currentTimeMillis()) {
+            return EmbeddedPep.deny("the grant's access token has expired");
+        }
+        return decide(grant.subject, access);
+    }
+
+    /** Records a continuation URI {@link #decideGrant} treats as revoked. Tests call this without HTTP. */
+    void rememberRevoked(String uri) {
+        if (uri == null || uri.isEmpty()) return;
+        if (revoked.size() >= REVOKED_REMEMBERED) revoked.removeFirst();
+        revoked.addLast(uri);
+    }
+
+    private void startPep() {
+        if (config.pep == null) return;
+        try {
+            config.pep.start();
+        } catch (Exception err) {
+            String detail = err instanceof PepException pep ? pep.detail() : err.getMessage();
+            throw new GnapError("config", detail == null || detail.isBlank() ? "the PEP did not start" : detail, err);
+        }
     }
 
     public Grant ensureFresh(Grant grant, Long now) {

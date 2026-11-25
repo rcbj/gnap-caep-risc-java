@@ -14,6 +14,8 @@ import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.Signature;
@@ -42,6 +44,9 @@ class SsfTest {
     static int created;
     static String authorization = "";
     static final List<Map<String, Object>> signed = new ArrayList<>();
+    static boolean subjectEndpoints;
+    static int subjectStatus = 204;
+    static final List<Map<String, Object>> subjectCalls = new ArrayList<>();
 
     @BeforeAll
     static void up() throws Exception {
@@ -68,11 +73,17 @@ class SsfTest {
                 return;
             }
             if ("/.well-known/ssf-configuration".equals(path)) {
-                send(exchange, 200, Json.dumps(Map.of(
-                        "issuer", base, "jwks_uri", base + "/jwks",
-                        "configuration_endpoint", base + "/ssf/stream",
-                        "verification_endpoint", base + "/ssf/verify",
-                        "delivery_methods_supported", List.of("urn:ietf:rfc:8936"))));
+                Map<String, Object> doc = new LinkedHashMap<>();
+                doc.put("issuer", base);
+                doc.put("jwks_uri", base + "/jwks");
+                doc.put("configuration_endpoint", base + "/ssf/stream");
+                doc.put("verification_endpoint", base + "/ssf/verify");
+                doc.put("delivery_methods_supported", List.of("urn:ietf:rfc:8936"));
+                if (subjectEndpoints) {
+                    doc.put("add_subject_endpoint", base + "/ssf/subjects:add");
+                    doc.put("remove_subject_endpoint", base + "/ssf/subjects:remove");
+                }
+                send(exchange, 200, Json.dumps(doc));
                 return;
             }
             if ("/jwks".equals(path)) {
@@ -96,6 +107,33 @@ class SsfTest {
                 stream.put("events_delivered", body.get("events_requested"));
                 streams.add(stream);
                 send(exchange, 201, Json.dumps(stream));
+                return;
+            }
+            if ("/ssf/stream".equals(path) && "PATCH".equals(exchange.getRequestMethod())) {
+                Map<String, Object> body = Json.map(Json.parse(text.isBlank() ? "{}" : text));
+                String id = body == null ? "" : String.valueOf(body.get("stream_id"));
+                Map<String, Object> found = null;
+                for (Map<String, Object> one : streams) if (id.equals(String.valueOf(one.get("stream_id")))) found = one;
+                if (found == null) {
+                    send(exchange, 404, "{}");
+                    return;
+                }
+                if (body != null && body.get("events_requested") != null) found.put("events_requested", body.get("events_requested"));
+                if (!found.containsKey("delivery")) found.put("delivery", Map.of("method", "urn:ietf:rfc:8936", "endpoint_url", base + "/ssf/poll/" + id));
+                send(exchange, 200, Json.dumps(found));
+                return;
+            }
+            if (subjectEndpoints && ("/ssf/subjects:add".equals(path) || "/ssf/subjects:remove".equals(path))) {
+                Map<String, Object> call = new LinkedHashMap<>();
+                call.put("path", path);
+                call.put("body", text);
+                subjectCalls.add(call);
+                if (subjectStatus == 204) {
+                    exchange.sendResponseHeaders(204, -1);
+                    exchange.close();
+                    return;
+                }
+                send(exchange, subjectStatus, "{}");
                 return;
             }
             if ("/ssf/verify".equals(path)) {
@@ -191,6 +229,126 @@ class SsfTest {
         assertEquals("invalid_key", Json.map(errs.get(bad)).get("err"));
         receiver.verify("abc");
         receiver.stop();
+    }
+
+    @Test
+    void addAndRemoveSubjectForPeopleAndNotForAnExpiredFind() throws Exception {
+        List<Map<String, Object>> savedStreams = new ArrayList<>(streams);
+        int savedCreated = created;
+        subjectEndpoints = true;
+        subjectCalls.clear();
+        streams.clear();
+        try {
+            SignalsReceiver receiver = receiver();
+            SessionIndex.Tracked alice = new SessionIndex.Tracked("L-a", "urn:uuid:alice", "Alice@Example.com", null, null);
+            receiver.track(alice);
+            receiver.start();
+            assertEquals(1, subjectCalls.size());
+            assertTrue(String.valueOf(subjectCalls.get(0).get("path")).endsWith("/ssf/subjects:add"));
+            assertTrue(String.valueOf(subjectCalls.get(0).get("body")).contains("\"format\":\"iss_sub\""));
+            assertTrue(String.valueOf(subjectCalls.get(0).get("body")).contains("urn:uuid:alice"));
+            assertFalse(String.valueOf(subjectCalls.get(0).get("body")).contains("opaque"));
+            receiver.track(alice);
+            assertEquals(1, subjectCalls.size());
+            receiver.track(new SessionIndex.Tracked("L-a2", "urn:uuid:alice", "Alice@Example.com", null, null));
+            assertEquals(1, subjectCalls.size());
+            receiver.untrack("L-a");
+            assertEquals(1, subjectCalls.size());
+            receiver.untrack("L-a2");
+            assertEquals(2, subjectCalls.size());
+            assertTrue(String.valueOf(subjectCalls.get(1).get("path")).endsWith("/ssf/subjects:remove"));
+            assertFalse(String.valueOf(subjectCalls.get(1).get("body")).contains("verified"));
+            receiver.stop();
+        } finally {
+            restoreTransmitter(savedStreams, savedCreated);
+        }
+    }
+
+    @Test
+    void aReusedStreamGainsTheEventsItLacks() throws Exception {
+        List<Map<String, Object>> savedStreams = new ArrayList<>(streams);
+        int savedCreated = created;
+        streams.clear();
+        try {
+            Map<String, Object> prior = new LinkedHashMap<>();
+            prior.put("stream_id", "kept");
+            prior.put("delivery", Map.of("method", "urn:ietf:rfc:8936", "endpoint_url", base + "/ssf/poll/kept"));
+            prior.put("events_requested", List.of(Events.CREDENTIAL_CHANGE));
+            prior.put("events_delivered", List.of(Events.CREDENTIAL_CHANGE));
+            streams.add(prior);
+            SignalsReceiver receiver = receiver();
+            receiver.start();
+            receiver.stop();
+            assertEquals("kept", receiver.stream().get("stream_id"));
+            // The parsed array's text escapes slashes, so match the event value itself.
+            Object requested = receiver.stream().get("events_requested");
+            assertTrue(requested instanceof List<?> events && events.contains(Events.SESSION_REVOKED), String.valueOf(requested));
+            assertEquals(savedCreated, created);
+        } finally {
+            restoreTransmitter(savedStreams, savedCreated);
+        }
+    }
+
+    @Test
+    void aReceiverNamesTheApplicationItsPepHearsAbout() throws Exception {
+        List<Map<String, Object>> savedStreams = new ArrayList<>(streams);
+        int savedCreated = created;
+        subjectEndpoints = true;
+        subjectCalls.clear();
+        streams.clear();
+        Path dir = Files.createTempDirectory("gnap-pep-ssf");
+        try {
+            X509Gen.KeyPairPem client = X509Gen.createSelfSigned("app");
+            X509Gen.KeyPairPem pepKey = X509Gen.createSelfSigned("pep");
+            Path keyFile = dir.resolve("pep.pem");
+            Files.writeString(keyFile, pepKey.privateKeyPem);
+            Map<String, Object> pep = new LinkedHashMap<>();
+            pep.put("name", "pep-test");
+            pep.put("mode", "central");
+            pep.put("assertionKey", keyFile.toString());
+            pep.put("pdpUrl", "https://sts.example");
+            pep.put("permitCacheMs", 1000);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("grantEndpoint", "https://sts.example/realm/acme/gnap");
+            body.put("application", "shop");
+            body.put("privateKey", client.privateKeyPem);
+            body.put("keyProof", "httpsig");
+            body.put("pep", pep);
+            Config.Resolved resolved = Config.resolve(body, dir);
+            SignalsReceiver receiver = receiver();
+            receiver.usePep(resolved.pep);
+            receiver.track(new SessionIndex.Tracked("L-a", "urn:uuid:alice", "alice@example.com", null, null));
+            receiver.start();
+            assertTrue(subjectCalls.size() >= 2, String.valueOf(subjectCalls));
+            String first = String.valueOf(subjectCalls.get(0).get("body"));
+            assertTrue(first.contains("\"format\":\"opaque\""));
+            assertTrue(first.contains("\"id\":\"shop\""));
+            assertTrue(String.valueOf(subjectCalls.get(1).get("body")).contains("urn:uuid:alice"));
+            receiver.untrack("L-a");
+            boolean removedApplication = false;
+            for (Map<String, Object> call : subjectCalls) {
+                if (String.valueOf(call.get("path")).endsWith(":remove") && String.valueOf(call.get("body")).contains("opaque")) {
+                    removedApplication = true;
+                }
+            }
+            assertFalse(removedApplication);
+            receiver.stop();
+        } finally {
+            restoreTransmitter(savedStreams, savedCreated);
+        }
+    }
+
+    private static SignalsReceiver receiver() {
+        return new SignalsReceiver(base, (ids, event) -> { }, null, request -> Map.of("authorization", "GNAP app-token"), 60_000L);
+    }
+
+    private static void restoreTransmitter(List<Map<String, Object>> savedStreams, int savedCreated) {
+        streams.clear();
+        streams.addAll(savedStreams);
+        created = savedCreated;
+        subjectEndpoints = false;
+        subjectStatus = 204;
+        subjectCalls.clear();
     }
 
     private static void send(com.sun.net.httpserver.HttpExchange exchange, int status, String body) {

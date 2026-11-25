@@ -19,7 +19,11 @@ import java.net.HttpURLConnection;
 import java.net.Socket;
 import java.net.URI;
 import java.net.URL;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.security.KeyStore;
 import java.security.Principal;
 import java.security.PrivateKey;
@@ -63,6 +67,12 @@ public final class Http {
         }
         byte[] payload = body == null ? null : body.getBytes(StandardCharsets.UTF_8);
         try {
+            // HttpURLConnection rejects PATCH. The JDK client speaks it, on
+            // HTTP/1.1: its default is a cleartext HTTP/2 upgrade, and that
+            // upgrade does not deliver this body.
+            if ("PATCH".equals(method)) {
+                return patch(uri, headers, payload, tls, code);
+            }
             HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
             conn.setInstanceFollowRedirects(false);
             conn.setConnectTimeout(TIMEOUT_MS);
@@ -107,6 +117,36 @@ public final class Http {
             if (message.toLowerCase().contains("timed out")) throw new GnapError(code, url + " did not answer within 15 s", err);
             throw new GnapError(code, url + ": " + message, err);
         }
+    }
+
+    private static Answer patch(URI uri, Map<String, String> headers, byte[] payload, Map<String, Object> tls, String code) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(uri).timeout(Duration.ofMillis(TIMEOUT_MS));
+        if (headers != null) {
+            headers.forEach((name, value) -> {
+                if (name != null && value != null
+                        && !"content-length".equalsIgnoreCase(name)
+                        && !"host".equalsIgnoreCase(name)) {
+                    builder.header(name, value);
+                }
+            });
+        }
+        builder.method("PATCH", payload == null
+                ? HttpRequest.BodyPublishers.noBody()
+                : HttpRequest.BodyPublishers.ofByteArray(payload));
+        HttpClient.Builder clients = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .connectTimeout(Duration.ofMillis(TIMEOUT_MS));
+        if ("https".equals(uri.getScheme())) {
+            clients.sslContext(context(tls));
+        }
+        HttpResponse<byte[]> response = clients.build().send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
+        byte[] raw = response.body() == null ? new byte[0] : response.body();
+        if (raw.length > MAX_BYTES) {
+            throw new GnapError(code, uri + " answered more than " + MAX_BYTES + " bytes");
+        }
+        String type = response.headers().firstValue("content-type").orElse("");
+        return new Answer(response.statusCode(), type, new String(raw, StandardCharsets.UTF_8));
     }
 
     private static byte[] readLimited(InputStream stream, String url, String code) throws Exception {
