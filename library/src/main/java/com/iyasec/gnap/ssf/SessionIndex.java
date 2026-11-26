@@ -42,7 +42,11 @@ public final class SessionIndex {
         public Memory() { this(100_000); }
         public Memory(int max) { this.max = max; }
 
-        public void add(Tracked session) {
+        public synchronized Tracked get(String localId) { return sessions.get(localId); }
+
+        public synchronized List<Tracked> snapshot() { return new ArrayList<>(sessions.values()); }
+
+        public synchronized void add(Tracked session) {
             if (sessions.size() >= max && !sessions.containsKey(session.localId)) {
                 long now = System.currentTimeMillis();
                 sessions.entrySet().removeIf(entry -> entry.getValue().expiresAt != null && entry.getValue().expiresAt <= now);
@@ -58,14 +62,14 @@ public final class SessionIndex {
                     session.idpSession, session.expiresAt));
         }
 
-        public void remove(String localId) { sessions.remove(localId); }
+        public synchronized void remove(String localId) { sessions.remove(localId); }
 
-        public List<String> byPerson(String person) { return find(session -> person.equals(session.person)); }
-        public List<String> byEmail(String email) {
+        public synchronized List<String> byPerson(String person) { return find(session -> person.equals(session.person)); }
+        public synchronized List<String> byEmail(String email) {
             String wanted = email.toLowerCase();
             return find(session -> wanted.equals(session.email));
         }
-        public List<String> byIdpSession(String idpSession) { return find(session -> idpSession.equals(session.idpSession)); }
+        public synchronized List<String> byIdpSession(String idpSession) { return find(session -> idpSession.equals(session.idpSession)); }
 
         private List<String> find(Predicate<Tracked> match) {
             long now = System.currentTimeMillis();

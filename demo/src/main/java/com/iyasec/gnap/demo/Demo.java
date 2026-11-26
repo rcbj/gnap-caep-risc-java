@@ -8,6 +8,8 @@ import com.iyasec.gnap.GnapClient;
 import com.iyasec.gnap.GnapError;
 import com.iyasec.gnap.Json;
 import com.iyasec.gnap.Subject;
+import com.iyasec.pep.Access;
+import com.iyasec.pep.Decision;
 import com.iyasec.gnap.ssf.Events;
 import com.iyasec.gnap.ssf.SessionIndex;
 import com.iyasec.gnap.ssf.SignalsReceiver;
@@ -117,20 +119,34 @@ public final class Demo {
             push(exchange, config, port, publicUrl, given);
             return;
         }
+        if ("/attribute-protected".equals(path)) {
+            attributeProtected(exchange, config, port, publicUrl, given);
+            return;
+        }
+        if (path.startsWith("/orders/")) {
+            String id = path.substring("/orders/".length());
+            if (!id.isEmpty() && !id.contains("/")) {
+                order(exchange, method, id, config, port, publicUrl, given);
+                return;
+            }
+        }
         write(exchange, 404, page("Not found", "<h1>Not found</h1>").getBytes(StandardCharsets.UTF_8), "text/html; charset=utf-8", null);
     }
 
     private static void home(HttpExchange exchange, Path config, int port, String publicUrl, boolean given) throws Exception {
         GnapClient client = tryClient(config, port, publicUrl, given);
         Session session = session(exchange);
+        String pages = client != null && client.pep() != null
+                ? "<p><a href=\"/attribute-protected\">Attribute-protected</a> <a href=\"/orders/42\">Order 42</a></p>"
+                : "";
         if (session != null && session.person != null) {
             String who = session.person.email != null ? session.person.email : session.person.name != null ? session.person.name : session.person.sub;
-            write(exchange, 200, page("Signed in", "<h1>Signed in</h1><p>" + esc(who) + "</p><form method=\"post\" action=\"/logout\"><button type=\"submit\">Sign out</button></form>").getBytes(StandardCharsets.UTF_8), "text/html; charset=utf-8", null);
+            write(exchange, 200, page("Signed in", "<h1>Signed in</h1><p>" + esc(who) + "</p>" + pages + "<form method=\"post\" action=\"/logout\"><button type=\"submit\">Sign out</button></form>").getBytes(StandardCharsets.UTF_8), "text/html; charset=utf-8", null);
             return;
         }
         String problem = client == null ? "<p>The GNAP client is not configured yet: " + esc(gnapError == null ? "the key could not be read" : gnapError) + ". Generate the key at the privateKey path, then run scripts/configure_iya_sts.py.</p>" : "";
         String link = client == null ? "" : "<p><a class=\"button\" href=\"/login\">Sign in with GNAP</a></p>";
-        write(exchange, 200, page("GNAP demo", "<h1>GNAP CAEP RISC demo</h1>" + problem + link).getBytes(StandardCharsets.UTF_8), "text/html; charset=utf-8", null);
+        write(exchange, 200, page("GNAP demo", "<h1>GNAP CAEP RISC demo</h1>" + problem + link + pages).getBytes(StandardCharsets.UTF_8), "text/html; charset=utf-8", null);
     }
 
     private static void liveStatus(HttpExchange exchange) throws Exception {
@@ -207,7 +223,7 @@ public final class Demo {
         if (opened != null) {
             Session session = SESSIONS.remove(String.valueOf(opened.get("id")));
             if (session != null && session.grant != null) {
-                try { if (receiver != null && session.grant.grantId != null) receiver.untrack(session.grant.grantId); } catch (Exception ignored) {
+                try { if (receiver != null) receiver.untrack(localId(session.grant)); } catch (Exception ignored) {
                     Caught.error(ignored);
                 }
                 try { if (gnap != null) gnap.revoke(session.grant); } catch (Exception ignored) {
@@ -240,9 +256,77 @@ public final class Demo {
         write(exchange, 303, new byte[0], "text/plain", null);
     }
 
+    private static void order(HttpExchange exchange, String method, String id, Path config, int port, String publicUrl, boolean given) throws Exception {
+        Session session = session(exchange);
+        if (session == null || session.grant == null) {
+            signedOut(exchange);
+            return;
+        }
+        GnapClient client = tryClient(config, port, publicUrl, given);
+        if (client == null) {
+            refused(exchange, "No decision could be asked for: the GNAP client is not configured.");
+            return;
+        }
+        String action = "GET".equals(method) ? "read" : "write";
+        try {
+            Decision decision = client.decideGrant(session.grant, Access.of(action, "order", id));
+            int status = decision.httpStatus();
+            String why = decision.why() == null ? "" : decision.why();
+            String body = status == 200
+                    ? "<h1>Order " + esc(id) + "</h1><p>The PEP permitted <code>" + esc(action) + "</code>.</p>"
+                    : "<h1>Not allowed</h1><p>The PEP refused <code>" + esc(action) + "</code> on order " + esc(id) + ": " + esc(why) + "</p>";
+            noStore(exchange, status, status == 200 ? "Order" : "Forbidden", body);
+        } catch (RuntimeException err) {
+            Caught.error(err);
+            refused(exchange, "The PEP could not decide.");
+        }
+    }
+
+    private static void attributeProtected(HttpExchange exchange, Path config, int port, String publicUrl, boolean given) throws Exception {
+        Session session = session(exchange);
+        if (session == null || session.grant == null) {
+            signedOut(exchange);
+            return;
+        }
+        GnapClient client = tryClient(config, port, publicUrl, given);
+        if (client == null) {
+            refused(exchange, "No decision could be asked for: the GNAP client is not configured.");
+            return;
+        }
+        String what = "<p><small>The demo application's policy permits <code>read</code> on <code>attribute-protected</code> when your directory attribute <code>attr1</code> is <code>abc123</code>.</small></p>";
+        try {
+            Decision decision = client.decideGrant(session.grant, Access.of("read", "attribute-protected", "attr1"));
+            int status = decision.httpStatus();
+            String why = decision.why() == null ? "" : decision.why();
+            String body = status == 200
+                    ? "<h1>Allowed</h1><p>The PEP permitted it.</p>" + what
+                    : "<h1>Not allowed</h1><p>The PEP refused it: " + esc(why) + "</p>" + what;
+            noStore(exchange, status, status == 200 ? "Attribute-protected" : "Forbidden", body);
+        } catch (RuntimeException err) {
+            Caught.error(err);
+            refused(exchange, "The PEP could not decide.");
+        }
+    }
+
+    private static void signedOut(HttpExchange exchange) throws Exception {
+        noStore(exchange, 401, "Sign in", "<h1>Sign in first</h1><p><a class=\"button\" href=\"/login\">Sign in with GNAP</a></p>");
+    }
+
+    private static void refused(HttpExchange exchange, String why) throws Exception {
+        noStore(exchange, 403, "Forbidden", "<h1>Not allowed</h1><p class=\"problem\">" + esc(why) + "</p>");
+    }
+
+    private static void noStore(HttpExchange exchange, int status, String title, String body) throws Exception {
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
+        write(exchange, status, page(title, body).getBytes(StandardCharsets.UTF_8), "text/html; charset=utf-8", null);
+    }
+
     private static void watch(GnapClient.Grant grant, Path config) {
         latest = grant;
-        if (receiver != null) return;
+        if (receiver != null) {
+            trackGrant(grant);
+            return;
+        }
         Map<String, Object> raw;
         try { raw = Json.map(Json.parse(Files.readString(config))); } catch (Exception err) {
             Caught.warn(err);
@@ -263,9 +347,13 @@ public final class Demo {
             return gnap.authorizationHeaders(latest, String.valueOf(request.get("method")), String.valueOf(request.get("url")), request.get("body") instanceof String body ? body : null);
         }, interval);
         receiver.on("*", Demo::rememberEvent);
+        if (gnap != null) {
+            receiver.setAddSubjects(gnap.config().addSubjects);
+            receiver.usePep(gnap.pep());
+        }
         try {
             receiver.start();
-            if (grant.subject != null) receiver.track(SessionIndex.fromPerson(grant.grantId == null ? grant.subject.sub : grant.grantId, grant.subject, grant.expiresAt));
+            trackGrant(grant);
             Object streamId = receiver.stream() == null ? "" : receiver.stream().get("stream_id");
             receiverState = "polling stream " + streamId + " at " + transmitter;
         } catch (Exception err) {
@@ -274,6 +362,16 @@ public final class Demo {
             receiverState = "not running: " + err.getMessage();
             receiver = null;
         }
+    }
+
+    private static void trackGrant(GnapClient.Grant grant) {
+        if (receiver == null || grant == null || grant.subject == null) return;
+        receiver.track(SessionIndex.fromPerson(localId(grant), grant.subject, grant.expiresAt));
+    }
+
+    private static String localId(GnapClient.Grant grant) {
+        if (grant.grantId != null && !grant.grantId.isBlank()) return grant.grantId;
+        return grant.subject == null || grant.subject.sub == null ? "" : grant.subject.sub;
     }
 
     private static GnapClient client(Path config, int port, String publicUrl, boolean given) throws Exception {

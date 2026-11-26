@@ -9,6 +9,10 @@ Registers the demo with the host's python3, signs in through it, emits a
 credential-change and a session-revoked event, and requires the demo's
 /live-status to show both. The second one also ends the local session.
 
+--pep (or LIVE_PEP=1) is opt-in. It runs the install script with --pep central,
+mounts the PEP key, and checks /attribute-protected and /orders/42. The
+nightly run leaves it off: iya-sts main does not have the embedded PEP.
+
 The unit suite stays `docker build --target test`. This file is the live half.
 It uses the host's Python and Docker. The demo runs in a container. Configuring
 the client is `python3 scripts/configure_iya_sts.py` on the host, not in a
@@ -380,6 +384,8 @@ LOG_PATHS = (
     "/login",
     "/callback",
     "/live-status",
+    "/attribute-protected",
+    "/orders/",
 )
 
 
@@ -407,6 +413,12 @@ class Driver:
         status, headers, payload = self.client.request("GET", url, headers={"accept": "text/html,application/json"})
         print(f"GET {status} {self.label(url)}", flush=True)
         return status, headers, payload
+
+    def call(self, method, url):
+        """Status and label only. The body is not printed."""
+        status, _headers, _payload = self.client.request(method, url, body=b"" if method != "GET" else None, headers={"accept": "text/html"})
+        print(f"{method} {status} {self.label(url)}", flush=True)
+        return status
 
     def post_json(self, url, body, csrf):
         raw = json.dumps(body).encode()
@@ -668,19 +680,22 @@ def prepare_sts(sts_port, secret):
     return f"https://127.0.0.1:{sts_port}", name
 
 
-def configure_demo(context, config, sts_origin, demo_origin, username):
+def configure_demo(context, config, sts_origin, demo_origin, username, pep=False):
     """The install script, on the host, in the build context: it writes tlsCa's file."""
     ensure_client_key(config)
     env = os.environ.copy()
     env["PUBLIC_URL"] = demo_origin
+    command = [
+        *PROFILE["configure"],
+        "--config", str(config),
+        "--idp", sts_origin,
+        "--public-url", demo_origin,
+        "--test-user", username,
+    ]
+    if pep:
+        command += ["--pep", "central"]
     completed = run(
-        [
-            *PROFILE["configure"],
-            "--config", str(config),
-            "--idp", sts_origin,
-            "--public-url", demo_origin,
-            "--test-user", username,
-        ],
+        command,
         cwd=str(context),
         env=env,
         capture_output=True,
@@ -691,7 +706,13 @@ def configure_demo(context, config, sts_origin, demo_origin, username):
         print(completed.stderr, file=sys.stderr, flush=True)
 
 
+def protected_status(driver, method, path):
+    """The status of one PEP page. The body is not printed."""
+    return driver.call(method, driver.demo_origin + path)
+
+
 def main():
+    pep = "--pep" in sys.argv or os.environ.get("LIVE_PEP", "").strip().lower() in ("1", "true", "yes")
     sts_port = int(os.environ.get("LIVE_STS_PORT") or 18548)
     demo_port = int(os.environ.get("LIVE_DEMO_PORT") or 18648)
     sts_given = bool(os.environ.get("IYA_STS_URL", "").strip())
@@ -721,7 +742,9 @@ def main():
         raw = json.loads(config.read_text(encoding="utf-8"))
         tls_ca = raw.get("tlsCa")
         chain_file = config.parent / tls_ca
-        configure_demo(context, config, sts_origin, demo_origin, username)
+        configure_demo(context, config, sts_origin, demo_origin, username, pep=pep)
+        if pep:
+            raw = json.loads(config.read_text(encoding="utf-8"))
         if "BEGIN CERTIFICATE" not in (chain_file.read_text(encoding="utf-8") if chain_file.exists() else ""):
             raise RuntimeError(f"the install script did not write tlsCa's file {tls_ca}")
         # The demo image, built after the install script, carries the chain.
@@ -746,6 +769,15 @@ def main():
             if not path or path.startswith("env:") or "-----BEGIN" in path or os.path.isabs(path):
                 raise RuntimeError(f"{PROFILE['config_file']} {name} is not a file under demo/")
             mounts += ["-v", f"{config.parent / path}:/app/demo/{path}:ro"]
+        if pep:
+            section = raw.get("pep") if isinstance(raw.get("pep"), dict) else {}
+            pep_key = str(section.get("assertionKey") or "")
+            if not pep_key or pep_key.startswith("env:") or "-----BEGIN" in pep_key or os.path.isabs(pep_key):
+                raise RuntimeError("pep.assertionKey is not a file under demo/")
+            pep_host = config.parent / pep_key
+            if not pep_host.is_file():
+                raise RuntimeError(f"the PEP key was not written at {pep_key}")
+            mounts += ["-v", f"{pep_host}:/app/demo/{pep_key}:ro"]
         docker_rm(demo_name)
         docker(
             "run", "-d", "--name", demo_name, "--network", "host",
@@ -779,6 +811,13 @@ def main():
             raise RuntimeError("the demo /healthz did not answer ok")
         client = Client(chain_file)
         driver = Driver(client, sts_origin, demo_origin, username, password)
+        pages = {}
+        if pep:
+            for path in ("/attribute-protected", "/orders/42"):
+                status = protected_status(driver, "GET", path)
+                pages["signedOut " + path] = status
+                if status != 401:
+                    raise RuntimeError(f"GET {path} before sign-in answered {status}")
         driver.sign_in()
         signed_in = wait_for(
             driver,
@@ -786,6 +825,13 @@ def main():
             "a signed-in demo polling its stream",
         )
         print(f"signed in as {signed_in.get('subject')}; {signed_in.get('receiver')}", flush=True)
+        if pep:
+            expect = {("GET", "/attribute-protected"): 200, ("GET", "/orders/42"): 200, ("POST", "/orders/42"): 403}
+            for (method, path), wanted in expect.items():
+                status = protected_status(driver, method, path)
+                pages[method + " " + path] = status
+                if status != wanted:
+                    raise RuntimeError(f"{method} {path} answered {status}")
         token = mint_admin(client, sts_origin, secret)
         session_id = session_id_for(client, sts_origin, token, username)
         emit(client, sts_origin, token, session_id, "credential-change")
@@ -804,14 +850,18 @@ def main():
             ),
             "session-revoked to end the local session",
         )
-        print(json.dumps({
+        summary = {
             "ok": True,
             "subject": signed_in.get("subject"),
             "idpCaInImage": True,
             "keysInImage": False,
             "trustChain": f"demo/{tls_ca}, baked into the demo image",
             "events": finished.get("events"),
-        }, indent=2))
+        }
+        if pep:
+            summary["pep"] = "central"
+            summary["pages"] = pages
+        print(json.dumps(summary, indent=2))
     finally:
         docker_rm(demo_name)
         if sts_name:

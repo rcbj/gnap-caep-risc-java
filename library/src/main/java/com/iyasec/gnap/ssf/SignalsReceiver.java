@@ -5,14 +5,20 @@ package com.iyasec.gnap.ssf;
 
 import com.iyasec.gnap.Caught;
 import com.iyasec.gnap.Discovery;
+import com.iyasec.gnap.EmbeddedPep;
 import com.iyasec.gnap.GnapError;
 import com.iyasec.gnap.Http;
 import com.iyasec.gnap.Json;
+import com.iyasec.pep.EventStream;
+import com.iyasec.pep.Pep;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
@@ -39,6 +45,12 @@ public final class SignalsReceiver {
     private final int maxEvents;
     private final BiConsumer<List<String>, Event> onEnd;
     private final SessionIndex.Memory index;
+    private final Set<String> added = new LinkedHashSet<>();
+    private boolean addSubjects = true;
+    private Consumer<String> onError;
+    private Pep pep;
+    /** Requested or Excluded, kept across a Down report so a later good poll restores it. */
+    private EventStream pepStreamState;
     private final Map<String, List<Consumer<Event>>> handlers = new LinkedHashMap<>();
     private Map<String, Object> config;
     private Map<String, Object> stream;
@@ -71,8 +83,52 @@ public final class SignalsReceiver {
     }
 
     public Map<String, Object> stream() { return stream; }
-    public void track(SessionIndex.Tracked session) { index.add(session); }
-    public void untrack(String localId) { index.remove(localId); }
+
+    /** Add and Remove Subject. Default true. Set before {@link #start}. */
+    public void setAddSubjects(boolean addSubjects) { this.addSubjects = addSubjects; }
+
+    /** A refusal or failure line. Without one, the line is printed. */
+    public void setOnError(Consumer<String> onError) { this.onError = onError; }
+
+    /**
+     * The embedded PEP whose policy events ride this stream. Call before
+     * {@link #start}. A PEP that does not want events (not local, and no
+     * Permit cache) is ignored.
+     */
+    public void usePep(Pep pep) {
+        if (pep == null || !EmbeddedPep.wantsEvents(pep)) {
+            this.pep = null;
+            return;
+        }
+        this.pep = pep;
+        if (!eventsRequested.contains(Pep.POLICIES_CHANGED_EVENT)) eventsRequested.add(Pep.POLICIES_CHANGED_EVENT);
+        on(Pep.POLICIES_CHANGED_EVENT, event -> {
+            try {
+                pep.onPolicyEvent(EmbeddedPep.toJson(event.payload));
+            } catch (Exception err) {
+                Caught.error(err);
+            }
+        });
+    }
+
+    public void track(SessionIndex.Tracked session) {
+        SessionIndex.Tracked replaced;
+        synchronized (index) {
+            replaced = index.get(session.localId);
+            index.add(session);
+        }
+        if (replaced != null) subjectGone(replaced);
+        subjectAdded(session);
+    }
+
+    public void untrack(String localId) {
+        SessionIndex.Tracked gone;
+        synchronized (index) {
+            gone = index.get(localId);
+            index.remove(localId);
+        }
+        if (gone != null) subjectGone(gone);
+    }
     public SignalsReceiver on(String type, Consumer<Event> handler) {
         handlers.computeIfAbsent(type, key -> new ArrayList<>()).add(handler);
         return this;
@@ -83,8 +139,29 @@ public final class SignalsReceiver {
         config = discover();
         jwks(true);
         stream = ensureStream();
+        if (pep != null) {
+            Boolean delivered = carries(stream, "events_delivered");
+            Boolean requested = carries(stream, "events_requested");
+            boolean carried = delivered != null ? delivered : requested != null ? requested : true;
+            pepStreamState = carried ? EventStream.REQUESTED : EventStream.EXCLUDED;
+            notePep(pepStreamState);
+        }
         Object endpoint = delivery(stream).get("endpoint_url");
         if (!(endpoint instanceof String)) throw new GnapError("ssf", "the stream has no poll endpoint_url");
+        if (addSubjects && pep != null) {
+            String application = pep.config().application;
+            if (application != null && !application.isEmpty()) {
+                Map<String, Object> subject = new LinkedHashMap<>();
+                subject.put("format", "opaque");
+                subject.put("id", application);
+                addSubject(subject, "the application its PEP hears about");
+            }
+        }
+        List<SessionIndex.Tracked> tracked;
+        synchronized (index) {
+            tracked = index.snapshot();
+        }
+        for (SessionIndex.Tracked session : tracked) subjectAdded(session);
         running = true;
         loop();
     }
@@ -93,6 +170,7 @@ public final class SignalsReceiver {
         running = false;
         if (timer != null) timer.cancel(false);
         if (scheduler != null) scheduler.shutdownNow();
+        notePep(EventStream.DOWN);
     }
 
     public boolean pollOnce() {
@@ -110,9 +188,11 @@ public final class SignalsReceiver {
         if (!owner) return join(future);
         try {
             boolean result = pollNow();
+            notePep(pepStreamState);
             future.complete(result);
             return result;
         } catch (RuntimeException err) {
+            notePep(EventStream.DOWN);
             Caught.error(err);
             future.completeExceptionally(err);
             throw err;
@@ -246,7 +326,17 @@ public final class SignalsReceiver {
                     Caught.error(err);
                     event.ended = false;
                 }
-                if (event.ended) for (String localId : sessions) index.remove(localId);
+                if (event.ended) {
+                    List<SessionIndex.Tracked> gone = new ArrayList<>();
+                    synchronized (index) {
+                        for (String localId : sessions) {
+                            SessionIndex.Tracked one = index.get(localId);
+                            if (one != null) gone.add(one);
+                            index.remove(localId);
+                        }
+                    }
+                    for (SessionIndex.Tracked one : gone) subjectGone(one);
+                }
             }
             List<Consumer<Event>> both = new ArrayList<>();
             if (handlers.get(entry.getKey()) != null) both.addAll(handlers.get(entry.getKey()));
@@ -313,7 +403,9 @@ public final class SignalsReceiver {
             if (all != null) {
                 for (Object item : all) {
                     Map<String, Object> one = Json.map(item);
-                    if (one != null && POLL.equals(delivery(one).get("method")) && one.get("stream_id") != null) return one;
+                    if (one != null && POLL.equals(delivery(one).get("method")) && one.get("stream_id") != null) {
+                        return withRequestedEvents(one, endpoint);
+                    }
                 }
             }
         } else if (listed.status != 404) {
@@ -389,4 +481,179 @@ public final class SignalsReceiver {
     }
 
     private record Reply(int status, Object body) {}
+
+    private void notePep(EventStream state) {
+        if (pep == null || state == null) return;
+        try {
+            pep.setEventStream(state);
+        } catch (RuntimeException err) {
+            Caught.warn(err);
+        }
+    }
+
+    /** True or false when {@code name} is an array; null when it is absent or not an array. */
+    private static Boolean carries(Map<String, Object> stream, String name) {
+        List<Object> list = Json.list(stream == null ? null : stream.get(name));
+        if (list == null) return null;
+        for (Object item : list) {
+            if (Pep.POLICIES_CHANGED_EVENT.equals(item instanceof String text ? text : null)) return true;
+        }
+        return false;
+    }
+
+    private Map<String, Object> subjectOf(SessionIndex.Tracked session) {
+        if (session.person != null && !session.person.isBlank()) {
+            Object issuer = config == null ? null : config.get("issuer");
+            if (!(issuer instanceof String iss) || iss.isBlank()) return null;
+            Map<String, Object> subject = new LinkedHashMap<>();
+            subject.put("format", "iss_sub");
+            subject.put("iss", iss);
+            subject.put("sub", session.person);
+            return subject;
+        }
+        if (session.email != null && !session.email.isBlank()) {
+            Map<String, Object> subject = new LinkedHashMap<>();
+            subject.put("format", "email");
+            subject.put("email", session.email.toLowerCase(Locale.ROOT));
+            return subject;
+        }
+        return null;
+    }
+
+    private String[] subjectEndpoint(String name) {
+        if (config == null || stream == null) return null;
+        Object endpoint = config.get(name);
+        Object streamId = stream.get("stream_id");
+        if (!(endpoint instanceof String url) || url.isEmpty()) return null;
+        if (!(streamId instanceof String id) || id.isEmpty()) return null;
+        return new String[] {url, id};
+    }
+
+    private void subjectAdded(SessionIndex.Tracked session) {
+        if (!addSubjects) return;
+        Map<String, Object> subject = subjectOf(session);
+        if (subject == null) return;
+        addSubject(subject, "a signed-in person");
+    }
+
+    private void addSubject(Map<String, Object> subject, String what) {
+        String[] where = subjectEndpoint("add_subject_endpoint");
+        if (where == null) return;
+        String key = Json.dumps(subject);
+        synchronized (added) {
+            if (added.contains(key)) return;
+        }
+        String format = subject.get("format") instanceof String text ? text : "";
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("stream_id", where[1]);
+        body.put("subject", subject);
+        body.put("verified", true);
+        try {
+            Reply reply = call("POST", where[0], body);
+            if (reply.status == 200 || reply.status == 201 || reply.status == 204) {
+                synchronized (added) { added.add(key); }
+                return;
+            }
+            report("ssf: Add Subject (" + format + ") for " + what + " on stream " + where[1] + " answered " + reply.status + ": " + clip(reply.body));
+        } catch (RuntimeException err) {
+            Caught.warn(err);
+            report("ssf: Add Subject (" + format + ") for " + what + " on stream " + where[1] + " failed: " + err.getMessage());
+        }
+    }
+
+    private void subjectGone(SessionIndex.Tracked session) {
+        if (!addSubjects) return;
+        Map<String, Object> subject = subjectOf(session);
+        if (subject == null) return;
+        String key = Json.dumps(subject);
+        synchronized (added) {
+            if (!added.contains(key)) return;
+        }
+        List<SessionIndex.Tracked> remaining;
+        synchronized (index) {
+            remaining = index.snapshot();
+        }
+        for (SessionIndex.Tracked other : remaining) {
+            Map<String, Object> theirs = subjectOf(other);
+            if (theirs != null && key.equals(Json.dumps(theirs))) return;
+        }
+        synchronized (added) {
+            if (!added.remove(key)) return;
+        }
+        String[] where = subjectEndpoint("remove_subject_endpoint");
+        if (where == null) return;
+        String format = subject.get("format") instanceof String text ? text : "";
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("stream_id", where[1]);
+        body.put("subject", subject);
+        try {
+            Reply reply = call("POST", where[0], body);
+            if (reply.status == 200 || reply.status == 204) return;
+            report("ssf: Remove Subject (" + format + ") for a signed-out person on stream " + where[1] + " answered " + reply.status + ": " + clip(reply.body));
+        } catch (RuntimeException err) {
+            Caught.warn(err);
+            report("ssf: Remove Subject (" + format + ") for a signed-out person on stream " + where[1] + " failed: " + err.getMessage());
+        }
+    }
+
+    /**
+     * A reused stream can predate an event type this receiver asks for now.
+     * PATCH merges the missing types. A refusal is reported and the stream
+     * is kept; the receiver still starts.
+     */
+    private Map<String, Object> withRequestedEvents(Map<String, Object> stream, String endpoint) {
+        List<String> requested = stringList(stream.get("events_requested"));
+        if (requested == null) requested = stringList(stream.get("events_delivered"));
+        if (requested == null) return stream;
+        List<String> missing = new ArrayList<>();
+        for (String event : eventsRequested) if (!requested.contains(event)) missing.add(event);
+        if (missing.isEmpty()) return stream;
+        String streamId = stream.get("stream_id") instanceof String id ? id : "";
+        List<String> merged = new ArrayList<>(requested);
+        merged.addAll(missing);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("stream_id", streamId);
+        body.put("events_requested", merged);
+        String line;
+        try {
+            Reply reply = call("PATCH", endpoint, body);
+            Map<String, Object> updated = Json.map(reply.body);
+            if (reply.status == 200 && updated != null && streamId.equals(updated.get("stream_id"))) {
+                if (!updated.containsKey("delivery") && stream.get("delivery") != null) updated.put("delivery", stream.get("delivery"));
+                return updated;
+            }
+            line = "ssf: adding " + String.join(", ", missing) + " to stream " + streamId + " answered " + reply.status + ": " + clip(reply.body);
+        } catch (RuntimeException err) {
+            Caught.warn(err);
+            line = "ssf: adding " + String.join(", ", missing) + " to stream " + streamId + " failed: " + err.getMessage();
+        }
+        report(line);
+        return stream;
+    }
+
+    private void report(String line) {
+        if (onError != null) {
+            try {
+                onError.accept(line);
+            } catch (RuntimeException err) {
+                Caught.error(err);
+            }
+            return;
+        }
+        System.out.println(line);
+    }
+
+    private static String clip(Object body) {
+        String text = body == null ? "" : body instanceof String value ? value : Json.dumps(body);
+        return text.length() > 300 ? text.substring(0, 300) : text;
+    }
+
+    /** The strings of a JSON array, or null when the value is not an array. */
+    private static List<String> stringList(Object value) {
+        List<Object> list = Json.list(value);
+        if (list == null) return null;
+        List<String> out = new ArrayList<>();
+        for (Object item : list) if (item instanceof String text) out.add(text);
+        return out;
+    }
 }
